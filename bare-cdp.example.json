@@ -1,0 +1,22 @@
+{
+  "chrome": {
+    "mode": "connect",
+    "host": "127.0.0.1",
+    "port": 9222,
+    "ws_url": null,
+    "executable": null,
+    "user_data_dir": "./.chrome-profile",
+    "headless": true,
+    "extra_args": []
+  },
+  "timeouts": {
+    "default": 10.0,
+    "navigation": 30.0,
+    "selector": 15.0
+  },
+  "artifacts": {
+    "dir": "./artifacts",
+    "screenshot_on_error": true,
+    "html_on_error": true
+  }
+}

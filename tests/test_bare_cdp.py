@@ -430,8 +430,8 @@ class TestInputText(unittest.TestCase):
         try:
             mod = self._load_adapter()
             conn = mod.CDPConnection(server.ws_url)
-            # Call internal helper directly to avoid needing a real DOM
-            conn._input_text_raw("#q", "hello world", clear=True, press_enter=False)
+            # Use public input API against the fake CDP server.
+            conn.input_text("#q", "hello world", clear=True, press_enter=False)
             conn.close()
 
             self.assertEqual(len(server.received), 2)
@@ -460,7 +460,7 @@ class TestInputText(unittest.TestCase):
         try:
             mod = self._load_adapter()
             conn = mod.CDPConnection(server.ws_url)
-            conn._input_text_raw("#q", "hello", clear=True, press_enter=True)
+            conn.input_text("#q", "hello", clear=True, press_enter=True)
             conn.close()
 
             self.assertEqual(len(server.received), 4)
@@ -487,7 +487,7 @@ class TestInputText(unittest.TestCase):
         try:
             mod = self._load_adapter()
             conn = mod.CDPConnection(server.ws_url)
-            conn._input_text_raw("#field", dangerous_text, clear=True, press_enter=False)
+            conn.input_text("#field", dangerous_text, clear=True, press_enter=False)
             conn.close()
 
             insert_call = server.received[1]
@@ -513,7 +513,7 @@ class TestExtractText(unittest.TestCase):
         try:
             mod = self._load_adapter()
             conn = mod.CDPConnection(server.ws_url)
-            text = conn._extract_text_raw(selector="#main")
+            text = conn.extract_text(selector="#main")
             conn.close()
 
             self.assertEqual(text, "page content")
@@ -531,7 +531,7 @@ class TestExtractText(unittest.TestCase):
         try:
             mod = self._load_adapter()
             conn = mod.CDPConnection(server.ws_url)
-            text = conn._extract_text_raw(selector=None)
+            text = conn.extract_text(selector=None)
             conn.close()
 
             self.assertEqual(text, "all text")

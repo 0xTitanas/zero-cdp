@@ -45,6 +45,7 @@ CLI examples:
 
 import argparse
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -86,19 +87,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "timeouts": {
         "default": 10.0,
-        "navigation": 30.0,
-        "selector": 15.0,
-    },
-    "artifacts": {
-        "dir": "./artifacts",
-        "screenshot_on_error": True,
-        "html_on_error": True,
     },
 }
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-    merged = json.loads(json.dumps(base))
+    merged = copy.deepcopy(base)
     for key, value in (override or {}).items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
             merged[key] = _deep_merge(merged[key], value)
@@ -123,7 +117,7 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
         BARE_CDP_HEADLESS
         BARE_CDP_TIMEOUT
     """
-    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
     if path:
         with open(path, "r", encoding="utf-8") as f:
             cfg = _deep_merge(cfg, json.load(f))
@@ -484,7 +478,7 @@ class CDPConnection:
         self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
         self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
 
-    def _input_text_raw(self, selector: str, text: str, clear: bool = True, press_enter: bool = False):
+    def input_text(self, selector: str, text: str, clear: bool = True, press_enter: bool = False):
         """Focus element, optionally clear, insert text, optionally press Enter."""
         sel_j = json.dumps(selector)
         js = (
@@ -506,9 +500,6 @@ class CDPConnection:
         if press_enter:
             self.press("Enter")
 
-    def input_text(self, selector: str, text: str, clear: bool = True, press_enter: bool = False):
-        self._input_text_raw(selector, text, clear=clear, press_enter=press_enter)
-
     def press(self, key: str):
         info = _key_event_info(key)
         down = {"type": "keyDown", **info}
@@ -516,7 +507,7 @@ class CDPConnection:
         self.call("Input.dispatchKeyEvent", down)
         self.call("Input.dispatchKeyEvent", up)
 
-    def _extract_text_raw(self, selector: Optional[str] = None) -> str:
+    def extract_text(self, selector: Optional[str] = None) -> str:
         """Extract innerText from a selector element, or document.body."""
         if selector is not None:
             js = f"(document.querySelector({json.dumps(selector)})||{{innerText:''}}).innerText"
@@ -524,9 +515,6 @@ class CDPConnection:
             js = "document.body ? document.body.innerText : ''"
         result = self.call("Runtime.evaluate", {"expression": js, "returnByValue": True})
         return result.get("result", {}).get("value", "")
-
-    def extract_text(self, selector: Optional[str] = None) -> str:
-        return self._extract_text_raw(selector)
 
     def extract_html(self, selector: Optional[str] = None) -> str:
         if selector is not None:
@@ -605,10 +593,6 @@ class ChromeCDPAdapter:
     def list_targets(self) -> List[Dict]:
         return list_targets_from_port(self._host, self._port, timeout=self._timeout)
 
-    # Backward-friendly short alias.
-    def list(self) -> List[Dict]:
-        return self.list_targets()
-
     def select_target(
         self,
         target_id: Optional[str] = None,
@@ -629,10 +613,6 @@ class ChromeCDPAdapter:
             if ws_url:
                 return self.connect(ws_url)
         raise ValueError("No matching Chrome target found")
-
-    # Backward-friendly short alias.
-    def select(self, target_id: str) -> CDPConnection:
-        return self.select_target(target_id=target_id)
 
     def new_tab(self, url: str = "about:blank", connect: bool = True):
         target = new_tab_from_port(url, self._host, self._port, timeout=self._timeout)
@@ -659,11 +639,6 @@ class ChromeCDPAdapter:
 
 
 Browser = ChromeCDPAdapter
-ChromeCDP = ChromeCDPAdapter
-Page = CDPConnection
-
-def browser_from_config(path: Optional[str] = None) -> ChromeCDPAdapter:
-    return ChromeCDPAdapter.from_config(path)
 
 
 # ---------------------------------------------------------------------------
@@ -673,16 +648,14 @@ def browser_from_config(path: Optional[str] = None) -> ChromeCDPAdapter:
 def discover_ws_url(
     host: str = "127.0.0.1",
     port: int = 9222,
-    prefer_page: bool = True,
     timeout: float = 5.0,
 ) -> str:
     """Discover a Chrome WebSocket debugger URL."""
     try:
         targets = list_targets_from_port(host, port, timeout=timeout)
-        if prefer_page:
-            for t in targets:
-                if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
-                    return t["webSocketDebuggerUrl"]
+        for t in targets:
+            if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+                return t["webSocketDebuggerUrl"]
         for t in targets:
             ws = t.get("webSocketDebuggerUrl")
             if ws:
@@ -723,22 +696,6 @@ def new_tab_from_port(
         return json.loads(resp.read())
 
 
-def _home_dirs() -> List[str]:
-    """Return likely user homes, including real passwd home when HOME is overridden."""
-    homes: List[str] = []
-    for candidate in [os.path.expanduser("~"), os.environ.get("HOME", "")]:
-        if candidate and candidate not in homes:
-            homes.append(candidate)
-    try:
-        import pwd
-        passwd_home = pwd.getpwuid(os.getuid()).pw_dir
-        if passwd_home and passwd_home not in homes:
-            homes.append(passwd_home)
-    except Exception:
-        pass
-    return homes
-
-
 def launch_chrome(
     executable: Optional[str] = None,
     port: int = 9222,
@@ -752,7 +709,18 @@ def launch_chrome(
 
     if executable is None:
         user_app_candidates: List[str] = []
-        for home in _home_dirs():
+        homes: List[str] = []
+        for candidate in [os.path.expanduser("~"), os.environ.get("HOME", "")]:
+            if candidate and candidate not in homes:
+                homes.append(candidate)
+        try:
+            import pwd
+            passwd_home = pwd.getpwuid(os.getuid()).pw_dir
+            if passwd_home and passwd_home not in homes:
+                homes.append(passwd_home)
+        except Exception:
+            pass
+        for home in homes:
             user_app_candidates.extend([
                 os.path.join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
                 os.path.join(home, "Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),

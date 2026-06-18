@@ -248,14 +248,7 @@ Example:
     "extra_args": []
   },
   "timeouts": {
-    "default": 10.0,
-    "navigation": 30.0,
-    "selector": 15.0
-  },
-  "artifacts": {
-    "dir": "./artifacts",
-    "screenshot_on_error": true,
-    "html_on_error": true
+    "default": 10.0
   }
 }
 ```

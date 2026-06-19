@@ -83,10 +83,16 @@ Hello from BareCDP
 
 ### Option B: connect to an existing Chrome debug port
 
-Start Chrome yourself with a dedicated automation profile:
+Start Chrome yourself with a dedicated automation profile and the hardened local-debugging shape from
+[docs/security.md](docs/security.md):
 
 ```text
-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/bare-cdp-profile
+chrome \
+  --remote-debugging-port=9222 \
+  --user-data-dir=/tmp/bare-cdp-profile \
+  --no-first-run \
+  --no-default-browser-check \
+  --disable-extensions
 ```
 
 Then connect:
@@ -100,7 +106,7 @@ print(browser.extract_text())
 browser.close()
 ```
 
-`Browser` connects lazily on the first action. Use `page = browser.connect()` when you want to keep the underlying `CDPConnection` object explicitly.
+`Browser` connects lazily on the first action. Use `connection = browser.connect()` when you want to keep the underlying `CDPConnection` object explicitly.
 
 ## Installation
 
@@ -203,7 +209,7 @@ Environment overrides:
 | `BARE_CDP_WS_URL` | Direct WebSocket debugger URL |
 | `BARE_CDP_CHROME` | Chrome/Chromium executable path |
 | `BARE_CDP_USER_DATA_DIR` | Chrome user-data directory |
-| `BARE_CDP_HEADLESS` | `true` / `false` |
+| `BARE_CDP_HEADLESS` | `true` / `false` / `1` / `0` |
 | `BARE_CDP_TIMEOUT` | Default timeout in seconds |
 
 See [docs/configuration.md](docs/configuration.md) for the full reference.
@@ -274,6 +280,11 @@ Common page actions exposed on both `Browser` and `CDPConnection`:
 - `screenshot(path=None, format="png")`
 - `close()`
 
+Endpoint and process helpers such as `discover_ws_url(...)`, `list_targets_from_port(...)`,
+`new_tab_from_port(...)`, and `wait_until_ready(...)` cover Chrome's `/json/*` discovery endpoints
+and launch readiness polling. Prefer `attach_session(...)` for new code; `attach_to_target(...)`
+is kept as a compatibility helper that returns only the flattened `sessionId`.
+
 ## Security notes
 
 Chrome remote debugging is powerful. Treat the debugging endpoint as local control of the browser profile.
@@ -318,6 +329,8 @@ python -S -c "import sys; sys.path.insert(0, '.'); import bare_cdp; print(bare_c
 ```
 
 The tests use only the Python standard library. They include a fake WebSocket/CDP server for handshake behavior, frame masking, CDP routing, events, selector safety, navigation waits, WebSocket control frames, screenshots, endpoint discovery, config validation, and process cleanup.
+
+The `examples/` directory contains small scripts for navigation/extraction, raw CDP calls, config-driven runs, form filling, and launch/screenshot flows; the development command above compiles those examples as part of the local smoke set.
 
 Current CI runs the unit/protocol/import/package checks on Ubuntu across Python 3.9–3.13. Live-Chrome smoke testing is currently manual release verification, not an automated CI job.
 

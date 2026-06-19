@@ -211,6 +211,8 @@ class FakeDiscoveryServer:
 
     def close(self):
         self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=1)
 
     def _make_handler(self):
         targets = self._targets

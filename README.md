@@ -22,10 +22,9 @@ It talks directly to the **Chrome DevTools Protocol** over a raw RFC-6455 WebSoc
 from bare_cdp import Browser
 
 browser = Browser(port=9222)
-page = browser.connect()
 
-page.navigate("https://example.com")
-print(page.extract_text())
+browser.navigate("https://example.com")
+print(browser.extract_text())
 
 browser.close()
 ```
@@ -170,14 +169,17 @@ Run Python:
 from bare_cdp import Browser
 
 browser = Browser(host="127.0.0.1", port=9222)
-page = browser.connect()
-page.navigate("https://example.com")
+browser.navigate("https://example.com")
 
-print(page.evaluate("document.title"))
-print(page.extract_text())
+print(browser.evaluate("document.title"))
+print(browser.extract_text())
 
 browser.close()
 ```
+
+`Browser` exposes the common page actions directly and connects lazily on the first
+action. Use `page = browser.connect()` when you want to hold the underlying
+`CDPConnection` object explicitly.
 
 ### Launch Chrome from Python
 
@@ -187,9 +189,8 @@ from bare_cdp import Browser, launch_chrome, terminate_chrome
 launch = launch_chrome(headless=True)  # uses an ephemeral CDP port by default
 browser = Browser(port=launch.port)
 try:
-    page = browser.connect()
-    page.navigate("https://example.com")
-    print(page.extract_text())
+    browser.navigate("https://example.com")
+    print(browser.extract_text())
 finally:
     browser.close()           # closes owned CDP WebSocket connections
     terminate_chrome(launch)  # stops Chrome and removes BareCDP's temp profile, if any
@@ -206,13 +207,12 @@ remove that temporary profile. User-supplied profile directories are preserved.
 from bare_cdp import Browser
 
 browser = Browser(port=9222)
-page = browser.connect()
 
-page.navigate("https://example.com/search")
-page.wait_for_selector("input[name=q]")
-page.input_text("input[name=q]", "Chrome DevTools Protocol", press_enter=True)
+browser.navigate("https://example.com/search")
+browser.wait_for_selector("input[name=q]")
+browser.input_text("input[name=q]", "Chrome DevTools Protocol", press_enter=True)
 
-print(page.extract_text())
+print(browser.extract_text())
 browser.close()
 ```
 
@@ -222,9 +222,8 @@ browser.close()
 from bare_cdp import Browser
 
 browser = Browser(port=9222)
-page = browser.connect()
-page.navigate("https://example.com")
-page.screenshot("example.png")
+browser.navigate("https://example.com")
+browser.screenshot("example.png")
 browser.close()
 ```
 
@@ -233,15 +232,16 @@ browser.close()
 ```python
 from bare_cdp import Browser
 
-page = Browser(port=9222).connect()
+browser = Browser(port=9222)
 
-result = page.call("Runtime.evaluate", {
+result = browser.call("Runtime.evaluate", {
     "expression": "document.documentElement.outerHTML",
     "returnByValue": True,
 })
 
 html = result["result"]["value"]
 print(html[:500])
+browser.close()
 ```
 
 ## Configuration
@@ -280,9 +280,8 @@ Use it:
 from bare_cdp import Browser
 
 browser = Browser.from_config("bare-cdp.json")
-page = browser.page()
-page.navigate("https://example.com")
-print(page.extract_text())
+browser.navigate("https://example.com")
+print(browser.extract_text())
 browser.close()
 ```
 
@@ -358,7 +357,7 @@ from bare_cdp import (
 - `Browser(host="127.0.0.1", port=9222, timeout=10.0)`
 - `Browser.from_config(path)`
 - `browser.connect(ws_url=None, replace=True)`
-- `browser.page()`
+- `browser.connection` / `browser.page()`
 - `browser.list_targets()`
 - `browser.select_target(...)`
 - `browser.new_tab(url="about:blank", connect=True)`
@@ -369,7 +368,9 @@ from bare_cdp import (
 
 ### Page / connection actions
 
-`Browser.connect()` returns a `CDPConnection` object:
+`Browser` exposes the common page actions directly and lazily connects on first use.
+`Browser.connect()` still returns the underlying `CDPConnection` when you want to keep
+that object explicitly:
 
 - `call(method, params=None, timeout=None, session_id=None)`
 - `wait_for_event(event_name, predicate=None, timeout=None, session_id=None, after_sequence=None)`
@@ -447,6 +448,8 @@ overrides, and process cleanup. Run the commands above before submitting changes
 BareCDP intentionally keeps the core small:
 
 - one JSON-RPC command or event wait at a time per connection, enforced with a connection-level lock;
+- `Browser` exposes explicit pass-through methods for common page actions so orchestrators,
+  IDEs, and type checkers can discover the usable surface without relying on dynamic delegation;
 - synchronous API only; BareCDP does not provide an async client today;
 - direct CDP primitives instead of a large abstraction layer;
 - `navigate()` checks `Page.navigate` errors and waits for loader-correlated lifecycle events or same-document navigation events (`wait=True`);

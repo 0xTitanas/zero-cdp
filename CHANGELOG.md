@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Explicit `Browser` / `ChromeCDPAdapter` pass-through methods for common page actions,
+  making orchestrator-facing verbs discoverable to readers, IDEs, and type checkers.
 - Single-file provenance metadata (`__author__`, `__license__`, `__url__`) for vendored copies.
 
 ### Documented

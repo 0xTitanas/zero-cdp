@@ -14,9 +14,8 @@ Quick start with a running Chrome debug port:
     from bare_cdp import Browser
 
     browser = Browser(port=9222)
-    page = browser.connect()
-    page.navigate("https://example.com")
-    print(page.extract_text())
+    browser.navigate("https://example.com")
+    print(browser.extract_text())
     browser.close()
 
 Launch Chrome from Python:
@@ -26,8 +25,7 @@ Launch Chrome from Python:
     launch = launch_chrome(headless=True)
     browser = Browser(port=launch.port)
     try:
-        page = browser.connect()
-        page.navigate("https://example.com")
+        browser.navigate("https://example.com")
     finally:
         browser.close()
         terminate_chrome(launch)
@@ -1061,6 +1059,104 @@ class ChromeCDPAdapter:
         if self._conn is None:
             return self.connect()
         return self._conn
+
+    @property
+    def events(self):
+        return self.connection.events
+
+    @property
+    def dropped_event_count(self) -> int:
+        return self.connection.dropped_event_count
+
+    def call(
+        self,
+        method: str,
+        params: Optional[Dict] = None,
+        timeout: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict:
+        return self.connection.call(method, params=params, timeout=timeout, session_id=session_id)
+
+    def wait_for_event(
+        self,
+        event_name: Any,
+        predicate: Optional[Callable[[Dict], bool]] = None,
+        timeout: Optional[float] = None,
+        *,
+        session_id: Any = None,
+        after_sequence: Optional[int] = None,
+    ) -> Dict:
+        return self.connection.wait_for_event(
+            event_name,
+            predicate=predicate,
+            timeout=timeout,
+            session_id=session_id,
+            after_sequence=after_sequence,
+        )
+
+    def event_cursor(self) -> int:
+        return self.connection.event_cursor()
+
+    def recent_events(self) -> tuple:
+        return self.connection.recent_events()
+
+    def attach_session(self, target_id: str) -> CDPSession:
+        return self.connection.attach_session(target_id)
+
+    def attach_to_target(self, target_id: str) -> str:
+        return self.connection.attach_to_target(target_id)
+
+    def navigate(
+        self,
+        url: str,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+        *,
+        wait_until: str = "load",
+    ) -> Dict:
+        return self.connection.navigate(url, wait=wait, timeout=timeout, wait_until=wait_until)
+
+    def wait_for_ready_state(
+        self,
+        states: tuple = ("interactive", "complete"),
+        timeout: Optional[float] = None,
+    ) -> str:
+        return self.connection.wait_for_ready_state(states=states, timeout=timeout)
+
+    def evaluate(
+        self,
+        expression: str,
+        return_by_value: bool = True,
+        timeout: Optional[float] = None,
+    ) -> Any:
+        return self.connection.evaluate(expression, return_by_value=return_by_value, timeout=timeout)
+
+    def wait_for_selector(self, selector: str, timeout: Optional[float] = None) -> bool:
+        return self.connection.wait_for_selector(selector, timeout=timeout)
+
+    def click(self, selector: str) -> None:
+        return self.connection.click(selector)
+
+    def input_text(
+        self,
+        selector: str,
+        text: str,
+        clear: bool = True,
+        press_enter: bool = False,
+    ) -> None:
+        return self.connection.input_text(selector, text, clear=clear, press_enter=press_enter)
+
+    def press(self, key: str) -> None:
+        return self.connection.press(key)
+
+    def extract_text(self, selector: Optional[str] = None) -> str:
+        return self.connection.extract_text(selector=selector)
+
+    def extract_html(self, selector: Optional[str] = None) -> str:
+        return self.connection.extract_html(selector=selector)
+
+    def screenshot(self, path: Optional[str] = None, format: str = "png") -> bytes:
+        return self.connection.screenshot(path=path, format=format)
 
     def list_targets(self) -> List[Dict]:
         return list_targets_from_port(self._host, self._port, timeout=self._timeout)

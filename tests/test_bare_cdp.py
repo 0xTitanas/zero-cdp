@@ -13,6 +13,7 @@ Covers:
 
 import base64
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -1212,6 +1213,149 @@ class TestV020CoreRouting(unittest.TestCase):
             else:
                 conn.input_text("#q", "hello", clear=False, press_enter=False)
                 self.assertIn("Input.insertText", state["calls"])
+
+
+class TestBrowserPassThroughMethods(unittest.TestCase):
+    def test_browser_exposes_connection_actions_explicitly(self):
+        expected = [
+            "call",
+            "wait_for_event",
+            "event_cursor",
+            "recent_events",
+            "attach_session",
+            "attach_to_target",
+            "navigate",
+            "wait_for_ready_state",
+            "evaluate",
+            "wait_for_selector",
+            "click",
+            "input_text",
+            "press",
+            "extract_text",
+            "extract_html",
+            "screenshot",
+        ]
+        for name in expected:
+            self.assertIn(name, adapter.ChromeCDPAdapter.__dict__, name)
+        for name in ("events", "dropped_event_count"):
+            self.assertIsInstance(adapter.ChromeCDPAdapter.__dict__[name], property, name)
+
+    def test_browser_pass_through_parameter_signatures_track_connection_methods(self):
+        expected = [
+            "call",
+            "wait_for_event",
+            "event_cursor",
+            "recent_events",
+            "attach_session",
+            "attach_to_target",
+            "navigate",
+            "wait_for_ready_state",
+            "evaluate",
+            "wait_for_selector",
+            "click",
+            "input_text",
+            "press",
+            "extract_text",
+            "extract_html",
+            "screenshot",
+        ]
+        for name in expected:
+            adapter_sig = inspect.signature(getattr(adapter.ChromeCDPAdapter, name))
+            connection_sig = inspect.signature(getattr(adapter.CDPConnection, name))
+            adapter_params = list(adapter_sig.parameters.values())
+            connection_params = list(connection_sig.parameters.values())
+            self.assertEqual([param.name for param in adapter_params], [param.name for param in connection_params], name)
+            self.assertEqual([param.kind for param in adapter_params], [param.kind for param in connection_params], name)
+            self.assertEqual([param.default for param in adapter_params], [param.default for param in connection_params], name)
+
+    def test_direct_action_lazily_connects_once_and_reuses_connection(self):
+        browser = adapter.ChromeCDPAdapter(timeout=1.0)
+        fake = mock.Mock()
+        fake.navigate.return_value = {"frameId": "F"}
+        fake.extract_text.return_value = "text"
+
+        def connect_once():
+            browser._conn = fake
+            return fake
+
+        with mock.patch.object(browser, "connect", side_effect=connect_once) as connect:
+            self.assertEqual(browser.navigate("https://example.com"), {"frameId": "F"})
+            self.assertEqual(browser.extract_text(), "text")
+            connect.assert_called_once_with()
+        fake.navigate.assert_called_once_with("https://example.com", wait=True, timeout=None, wait_until="load")
+        fake.extract_text.assert_called_once_with(selector=None)
+
+    def test_browser_pass_through_methods_delegate_to_current_connection(self):
+        browser = adapter.ChromeCDPAdapter(timeout=1.0)
+        fake = mock.Mock()
+        fake.events = ("queued",)
+        fake.dropped_event_count = 2
+        fake.call.return_value = {"result": "call"}
+        fake.wait_for_event.return_value = {"event": "ok"}
+        fake.event_cursor.return_value = 42
+        fake.recent_events.return_value = ("recent",)
+        fake.attach_session.return_value = "session"
+        fake.attach_to_target.return_value = "session-id"
+        fake.navigate.return_value = {"frameId": "F"}
+        fake.wait_for_ready_state.return_value = "complete"
+        fake.evaluate.return_value = "value"
+        fake.wait_for_selector.return_value = True
+        fake.extract_text.return_value = "text"
+        fake.extract_html.return_value = "<html></html>"
+        fake.screenshot.return_value = b"png"
+        browser._conn = fake
+
+        self.assertEqual(browser.events, ("queued",))
+        self.assertEqual(browser.dropped_event_count, 2)
+        self.assertEqual(
+            browser.call("Runtime.evaluate", {"expression": "1"}, timeout=3, session_id="S"),
+            {"result": "call"},
+        )
+        fake.call.assert_called_once_with(
+            "Runtime.evaluate",
+            params={"expression": "1"},
+            timeout=3,
+            session_id="S",
+        )
+
+        predicate = lambda params: True
+        self.assertEqual(
+            browser.wait_for_event(
+                "Runtime.consoleAPICalled",
+                predicate=predicate,
+                timeout=4,
+                session_id=adapter.ANY_SESSION,
+                after_sequence=9,
+            ),
+            {"event": "ok"},
+        )
+        fake.wait_for_event.assert_called_once_with(
+            "Runtime.consoleAPICalled",
+            predicate=predicate,
+            timeout=4,
+            session_id=adapter.ANY_SESSION,
+            after_sequence=9,
+        )
+
+        self.assertEqual(browser.event_cursor(), 42)
+        self.assertEqual(browser.recent_events(), ("recent",))
+        self.assertEqual(browser.attach_session("TARGET"), "session")
+        self.assertEqual(browser.attach_to_target("TARGET"), "session-id")
+        self.assertEqual(browser.navigate("https://example.com", wait=False, timeout=1, wait_until="commit"), {"frameId": "F"})
+        fake.navigate.assert_called_once_with("https://example.com", wait=False, timeout=1, wait_until="commit")
+        self.assertEqual(browser.wait_for_ready_state(("complete",), timeout=2), "complete")
+        self.assertEqual(browser.evaluate("document.title", return_by_value=False, timeout=2), "value")
+        self.assertTrue(browser.wait_for_selector("main", timeout=2))
+        browser.click("button")
+        fake.click.assert_called_once_with("button")
+        browser.input_text("input", "hello", clear=False, press_enter=True)
+        fake.input_text.assert_called_once_with("input", "hello", clear=False, press_enter=True)
+        browser.press("Enter")
+        fake.press.assert_called_once_with("Enter")
+        self.assertEqual(browser.extract_text("main"), "text")
+        self.assertEqual(browser.extract_html("main"), "<html></html>")
+        self.assertEqual(browser.screenshot("page.png", format="jpeg"), b"png")
+
 
 
 class TestV020LaunchAndOwnership(unittest.TestCase):

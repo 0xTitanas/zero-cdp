@@ -278,7 +278,9 @@ Example:
 `0` so Chrome selects an ephemeral debugging port and BareCDP binds to the spawned process via
 `DevToolsActivePort`. Set an integer only when you intentionally want a fixed port. `ws_url` is
 connect-mode only; launch mode rejects it to avoid controlling a browser other than the one it
-just spawned.
+just spawned. BareCDP validates config types strictly: `mode` must be `"connect"` or
+`"launch"`, `headless` must be a JSON boolean, `extra_args` must be a list of strings,
+ports must be integers, and timeouts must be finite positive numbers.
 
 Use it:
 
@@ -327,6 +329,12 @@ python -m bare_cdp --navigate https://example.com --screenshot example.png
 
 # Launch Chrome first, then run
 python -m bare_cdp --launch --navigate https://example.com --extract-text
+
+# Open a new tab, connect to that target, then run follow-on actions
+python -m bare_cdp --new-tab https://example.com --eval "document.title"
+
+# In launch mode, --new-tab must be paired with a follow-on action
+python -m bare_cdp --launch --new-tab https://example.com --extract-text
 
 # Use config
 python -m bare_cdp --config bare-cdp.json --navigate https://example.com --extract-text

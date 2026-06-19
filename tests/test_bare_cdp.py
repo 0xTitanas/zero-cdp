@@ -933,6 +933,28 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
         with self.assertRaises(adapter.CDPTimeoutError):
             adapter.wait_until_ready(port=9, timeout=0.1)
 
+    def test_wait_until_ready_rejects_nonfinite_timeout_before_polling(self):
+        for bad_timeout in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timeout=bad_timeout), \
+                 mock.patch.object(adapter, "_browser_ws_url_from_version") as probe:
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    adapter.wait_until_ready(timeout=bad_timeout)
+                probe.assert_not_called()
+
+    def test_endpoint_helpers_reject_nonfinite_timeouts_before_network(self):
+        helpers = [
+            (adapter.discover_ws_url, (), {"timeout": float("nan")}),
+            (adapter.list_targets_from_port, (), {"timeout": float("inf")}),
+            (adapter.new_tab_from_port, ("https://example.com",), {"timeout": float("-inf")}),
+            (adapter._browser_ws_url_from_version, (), {"timeout": float("nan")}),
+        ]
+        for fn, args, kwargs in helpers:
+            with self.subTest(helper=fn.__name__), \
+                 mock.patch.object(adapter.urllib.request, "urlopen") as urlopen:
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    fn(*args, **kwargs)
+                urlopen.assert_not_called()
+
     def test_launch_chrome_prefers_path_candidate_from_shutil_which(self):
         expected = r"C:\\Tools\\Chrome\\chrome.exe"
         launched = []
@@ -1063,6 +1085,18 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
         cfg = adapter.load_config(None)
         self.assertIsNone(cfg["chrome"]["port"])
 
+    def test_load_config_rejects_falsey_non_object_files(self):
+        for payload in (None, [], False, 0, ""):
+            with self.subTest(payload=payload):
+                with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+                    json.dump(payload, handle)
+                    cfg_path = handle.name
+                try:
+                    with self.assertRaisesRegex(TypeError, "config must be a JSON object"):
+                        adapter.load_config(cfg_path)
+                finally:
+                    os.unlink(cfg_path)
+
     def test_launch_chrome_rejects_nonpositive_ready_timeout_before_spawn(self):
         with mock.patch("subprocess.Popen") as popen:
             with self.assertRaisesRegex(ValueError, "ready_timeout"):
@@ -1070,6 +1104,13 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ready_timeout"):
                 adapter.launch_chrome(executable="/bin/echo", ready_timeout=-1)
         popen.assert_not_called()
+
+    def test_launch_chrome_rejects_nonfinite_ready_timeout_before_spawn(self):
+        for bad_timeout in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timeout=bad_timeout), mock.patch("subprocess.Popen") as popen:
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    adapter.launch_chrome(executable="/bin/echo", ready_timeout=bad_timeout)
+                popen.assert_not_called()
 
     def test_launch_chrome_rejects_reserved_launch_arguments_before_spawn(self):
         reserved = [
@@ -1131,8 +1172,31 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
              mock.patch.object(adapter, "new_tab_from_port", side_effect=adapter.CDPConnectionError("new-tab failed")), \
              mock.patch.object(adapter, "terminate_chrome") as terminate:
             with self.assertRaisesRegex(adapter.CDPConnectionError, "new-tab failed"):
-                adapter._main(["--launch", "--new-tab", "https://example.com"])
+                adapter._main(["--launch", "--new-tab", "https://example.com", "--eval", "document.title"])
         terminate.assert_called_once_with(launch)
+
+    def test_cli_new_tab_connects_to_new_target_before_follow_on_actions(self):
+        conn = mock.Mock()
+        conn.evaluate.return_value = "new-tab-title"
+        target = {"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/NEW"}
+        with mock.patch.object(adapter, "new_tab_from_port", return_value=target) as new_tab, \
+             mock.patch.object(adapter, "CDPConnection", return_value=conn) as connection, \
+             mock.patch.object(adapter, "discover_ws_url") as discover:
+            self.assertEqual(
+                adapter._main(["--port", "9222", "--new-tab", "https://example.com", "--eval", "document.title"]),
+                0,
+            )
+        new_tab.assert_called_once_with("https://example.com", host="127.0.0.1", port=9222, timeout=10.0)
+        connection.assert_called_once_with("ws://127.0.0.1:9222/devtools/page/NEW", timeout=10.0)
+        conn.evaluate.assert_called_once_with("document.title")
+        conn.close.assert_called_once()
+        discover.assert_not_called()
+
+    def test_cli_launch_new_tab_without_actions_is_rejected_before_launch(self):
+        with mock.patch.object(adapter, "launch_chrome") as launcher:
+            with self.assertRaises(SystemExit):
+                adapter._main(["--launch", "--new-tab", "https://example.com"])
+            launcher.assert_not_called()
 
     def test_from_config_launch_uses_ephemeral_default_and_owned_endpoint(self):
         launch = adapter.LaunchedChrome(
@@ -1169,6 +1233,46 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
         finally:
             os.unlink(cfg_path)
 
+    def test_from_config_validates_mode_and_config_types_before_launch(self):
+        cases = [
+            ({"chrome": {"mode": "laucn"}}, "mode"),
+            ({"chrome": {"mode": "launch", "headless": "false"}}, "headless"),
+            ({"chrome": {"mode": "launch", "extra_args": "--disable-gpu"}}, "extra_args"),
+            ({"chrome": {"mode": "launch", "extra_args": ["--disable-gpu", 123]}}, "extra_args"),
+            ({"chrome": {"mode": "launch", "port": "9222"}}, "port"),
+            ({"chrome": {"mode": "launch", "port": 9222.5}}, "port"),
+            ({"chrome": {"mode": "launch", "port": True}}, "port"),
+            ({"timeouts": {"default": "10"}}, "timeout"),
+            ({"timeouts": {"default": True}}, "timeout"),
+            ({"timeouts": {"default": float("inf")}}, "timeout"),
+        ]
+        for payload, message in cases:
+            with self.subTest(payload=payload):
+                with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+                    json.dump(payload, handle)
+                    cfg_path = handle.name
+                try:
+                    with mock.patch.object(adapter, "launch_chrome") as launcher:
+                        with self.assertRaisesRegex((TypeError, ValueError), message):
+                            adapter.Browser.from_config(cfg_path)
+                    launcher.assert_not_called()
+                finally:
+                    os.unlink(cfg_path)
+
+    def test_mode_default_port_rejects_non_integer_ports(self):
+        for bad_port in ("9222", 9222.5, True):
+            with self.subTest(port=bad_port):
+                with self.assertRaisesRegex((TypeError, ValueError), "port"):
+                    adapter._mode_default_port(bad_port, launch_mode=False)
+
+    def test_connection_and_adapter_reject_nonfinite_default_timeouts(self):
+        for bad_timeout in (float("nan"), float("inf"), float("-inf"), True):
+            with self.subTest(timeout=bad_timeout):
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    adapter.CDPConnection("ws://127.0.0.1:9222/devtools/page/1", timeout=bad_timeout)
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    adapter.ChromeCDPAdapter(timeout=bad_timeout)
+
 class TestV020CoreRouting(unittest.TestCase):
     def test_negative_and_zero_command_timeouts_send_no_frame(self):
         for bad_timeout in (-1, 0):
@@ -1183,6 +1287,22 @@ class TestV020CoreRouting(unittest.TestCase):
                     self.assertEqual(server.received, [])
                 finally:
                     server.close()
+
+    def test_nonfinite_command_timeouts_send_no_frame(self):
+        for bad_timeout in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timeout=bad_timeout):
+                conn = object.__new__(adapter.CDPConnection)
+                conn._io_lock = threading.RLock()
+                conn._timeout = 1.0
+                conn._id = 0
+                conn._sock = object()
+                conn._ws = mock.Mock()
+                conn.close = mock.Mock()
+                conn._read_cdp_message = mock.Mock(return_value={"id": 1, "result": {}})
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    adapter.CDPConnection.call(conn, "Runtime.evaluate", {"expression": "1"}, timeout=bad_timeout)
+                conn._ws.send_text.assert_not_called()
+                conn._read_cdp_message.assert_not_called()
 
     def test_command_timeout_after_send_closes_connection(self):
         conn = object.__new__(adapter.CDPConnection)
@@ -1662,6 +1782,74 @@ class TestV020LaunchAndOwnership(unittest.TestCase):
                 adapter.launch_chrome(executable="/bin/echo", ready_timeout=1.0)
         self.assertFalse(os.path.exists(touched["user_dir"]))
         self.assertFalse(os.path.exists(touched["stderr_path"]))
+
+    def test_launch_chrome_keyboard_interrupt_after_spawn_cleans_resources(self):
+        touched = {}
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.return_value = None
+
+        def fake_popen(cmd, **kwargs):
+            touched["user_dir"] = next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("--user-data-dir="))
+            touched["stderr_path"] = kwargs["stderr"].name
+            return proc
+
+        try:
+            with mock.patch("subprocess.Popen", side_effect=fake_popen), \
+                 mock.patch.object(adapter, "_wait_for_devtools_active_port", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    adapter.launch_chrome(executable="/bin/echo", port=0, ready_timeout=1.0)
+            proc.terminate.assert_called_once()
+            self.assertFalse(os.path.exists(touched["user_dir"]))
+            self.assertFalse(os.path.exists(touched["stderr_path"]))
+        finally:
+            if touched.get("user_dir"):
+                shutil.rmtree(touched["user_dir"], ignore_errors=True)
+            if touched.get("stderr_path") and os.path.exists(touched["stderr_path"]):
+                os.unlink(touched["stderr_path"])
+
+    def test_launch_chrome_system_exit_after_spawn_cleans_resources(self):
+        touched = {}
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.return_value = None
+
+        def fake_popen(cmd, **kwargs):
+            touched["user_dir"] = next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("--user-data-dir="))
+            touched["stderr_path"] = kwargs["stderr"].name
+            return proc
+
+        try:
+            with mock.patch("subprocess.Popen", side_effect=fake_popen), \
+                 mock.patch.object(adapter, "_wait_for_devtools_active_port", side_effect=SystemExit(2)):
+                with self.assertRaises(SystemExit):
+                    adapter.launch_chrome(executable="/bin/echo", port=0, ready_timeout=1.0)
+            proc.terminate.assert_called_once()
+            self.assertFalse(os.path.exists(touched["user_dir"]))
+            self.assertFalse(os.path.exists(touched["stderr_path"]))
+        finally:
+            if touched.get("user_dir"):
+                shutil.rmtree(touched["user_dir"], ignore_errors=True)
+            if touched.get("stderr_path") and os.path.exists(touched["stderr_path"]):
+                os.unlink(touched["stderr_path"])
+
+    def test_launch_chrome_stderr_file_failure_cleans_owned_profile(self):
+        real_mkdtemp = tempfile.mkdtemp
+        touched = {}
+
+        def fake_mkdtemp(*args, **kwargs):
+            touched["user_dir"] = real_mkdtemp(*args, **kwargs)
+            return touched["user_dir"]
+
+        try:
+            with mock.patch.object(adapter.tempfile, "mkdtemp", side_effect=fake_mkdtemp), \
+                 mock.patch.object(adapter.tempfile, "NamedTemporaryFile", side_effect=OSError("stderr unavailable")):
+                with self.assertRaisesRegex(OSError, "stderr unavailable"):
+                    adapter.launch_chrome(executable="/bin/echo", port=0, ready_timeout=1.0)
+            self.assertFalse(os.path.exists(touched["user_dir"]))
+        finally:
+            if touched.get("user_dir"):
+                shutil.rmtree(touched["user_dir"], ignore_errors=True)
 
     def test_adapter_replacement_failure_leaves_old_connection_and_close_closes_all(self):
         made = []

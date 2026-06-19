@@ -53,6 +53,7 @@ import copy
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import shutil
 import socket
@@ -67,7 +68,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 __author__ = "BareCDP contributors"
 __license__ = "MIT"
 __url__ = "https://github.com/0xTitanas/bare-cdp"
@@ -202,8 +203,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(override, dict):
+        raise TypeError("config must be a JSON object")
     merged = copy.deepcopy(base)
-    for key, value in (override or {}).items():
+    for key, value in override.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
             merged[key] = _deep_merge(merged[key], value)
         else:
@@ -213,6 +216,78 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 def _bool_from_env(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _validate_timeout(value: Any, name: str = "timeout") -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a finite number greater than zero")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number greater than zero") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{name} must be a finite number greater than zero")
+    return number
+
+
+def _validate_port(value: Any, name: str = "port", *, allow_zero: bool = False) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    minimum = 0 if allow_zero else 1
+    if not minimum <= value <= 65535:
+        if allow_zero:
+            raise ValueError(f"{name} must be between 0 and 65535")
+        raise ValueError(f"{name} must be between 1 and 65535")
+    return value
+
+
+def _validate_optional_str(value: Any, name: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string or null")
+    return value
+
+
+def _validate_extra_args(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError("chrome.extra_args must be a list of strings")
+    for arg in value:
+        if not isinstance(arg, str):
+            raise TypeError("chrome.extra_args must be a list of strings")
+    return value
+
+
+def _validate_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(cfg, dict):
+        raise TypeError("config must be a JSON object")
+    chrome = cfg.get("chrome")
+    if not isinstance(chrome, dict):
+        raise TypeError("chrome config must be an object")
+    timeouts = cfg.get("timeouts")
+    if not isinstance(timeouts, dict):
+        raise TypeError("timeouts config must be an object")
+
+    mode = chrome.get("mode", "connect")
+    if mode not in {"connect", "launch"}:
+        raise ValueError("chrome.mode must be 'connect' or 'launch'")
+    chrome["mode"] = mode
+    chrome["host"] = _validate_optional_str(chrome.get("host"), "chrome.host") or "127.0.0.1"
+    chrome["ws_url"] = _validate_optional_str(chrome.get("ws_url"), "chrome.ws_url")
+    chrome["executable"] = _validate_optional_str(chrome.get("executable"), "chrome.executable")
+    chrome["user_data_dir"] = _validate_optional_str(chrome.get("user_data_dir"), "chrome.user_data_dir")
+    if not isinstance(chrome.get("headless", True), bool):
+        raise TypeError("chrome.headless must be a boolean")
+    chrome["extra_args"] = _validate_extra_args(chrome.get("extra_args"))
+    if chrome.get("port") is not None:
+        chrome["port"] = _validate_port(chrome["port"], "chrome.port", allow_zero=(mode == "launch"))
+    default_timeout = timeouts.get("default", 10.0)
+    if isinstance(default_timeout, bool) or not isinstance(default_timeout, (int, float)):
+        raise TypeError("timeout must be a finite positive number")
+    timeouts["default"] = _validate_timeout(default_timeout, "timeout")
+    return cfg
 
 
 def load_config(path: Optional[str] = None) -> Dict[str, Any]:
@@ -244,7 +319,7 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
     for env_name, (section, key, caster) in env_map.items():
         if env_name in os.environ and os.environ[env_name] != "":
             cfg[section][key] = caster(os.environ[env_name])
-    return cfg
+    return _validate_config(cfg)
 
 
 def write_default_config(path: str = "bare-cdp.json") -> str:
@@ -258,11 +333,11 @@ def write_default_config(path: str = "bare-cdp.json") -> str:
 def _mode_default_port(configured_port: Any, launch_mode: bool) -> int:
     if configured_port is None:
         return 0 if launch_mode else 9222
-    return int(configured_port)
+    return _validate_port(configured_port, "port", allow_zero=launch_mode)
 
 
 def _launch_extra_args(extra_args: Optional[List[str]]) -> List[str]:
-    args = list(extra_args or [])
+    args = _validate_extra_args(extra_args)
     reserved = {
         "--remote-debugging-port",
         "--remote-debugging-address",
@@ -504,7 +579,7 @@ class CDPConnection:
 
     def __init__(self, ws_url: str, timeout: float = 10.0):
         self._ws_url = ws_url
-        self._timeout = timeout
+        self._timeout = _validate_timeout(timeout)
         self._id = 0
         self._sock: Optional[socket.socket] = None
         self._ws: Optional[_WSReceiver] = None
@@ -552,10 +627,7 @@ class CDPConnection:
             yield
 
     def _resolve_timeout(self, timeout: Optional[float]) -> float:
-        value = self._timeout if timeout is None else float(timeout)
-        if value <= 0:
-            raise ValueError("timeout must be greater than zero")
-        return value
+        return _validate_timeout(self._timeout if timeout is None else timeout)
 
     def _make_deadline(self, timeout: Optional[float]) -> float:
         return time.monotonic() + self._resolve_timeout(timeout)
@@ -1129,8 +1201,8 @@ class ChromeCDPAdapter:
 
     def __init__(self, host: str = "127.0.0.1", port: int = 9222, timeout: float = 10.0):
         self._host = host
-        self._port = port
-        self._timeout = timeout
+        self._port = _validate_port(port, "port", allow_zero=False)
+        self._timeout = _validate_timeout(timeout)
         self._conn: Optional[CDPConnection] = None
         self._connections: set = set()
         self._launch: Optional[LaunchedChrome] = None
@@ -1164,19 +1236,19 @@ class ChromeCDPAdapter:
     def from_config(cls, path: Optional[str] = None) -> "ChromeCDPAdapter":
         cfg = load_config(path)
         chrome = cfg["chrome"]
-        timeout = float(cfg["timeouts"].get("default", 10.0))
+        timeout = _validate_timeout(cfg["timeouts"].get("default", 10.0))
         launch_mode = chrome.get("mode") == "launch"
         if launch_mode and chrome.get("ws_url"):
             raise ValueError("chrome.ws_url cannot be used with launch mode")
         host = chrome.get("host") or "127.0.0.1"
         port = _mode_default_port(chrome.get("port"), launch_mode)
-        browser = cls(host=host, port=port, timeout=timeout)
+        browser = cls(host=host, port=(port if port != 0 else 9222), timeout=timeout)
         try:
             if launch_mode:
                 launch = launch_chrome(
                     executable=chrome.get("executable"),
                     port=port,
-                    headless=bool(chrome.get("headless", True)),
+                    headless=chrome.get("headless", True),
                     user_data_dir=chrome.get("user_data_dir"),
                     extra_args=chrome.get("extra_args") or [],
                 )
@@ -1361,6 +1433,8 @@ def discover_ws_url(
     timeout: float = 5.0,
 ) -> str:
     """Discover a Chrome WebSocket debugger URL."""
+    timeout = _validate_timeout(timeout)
+    port = _validate_port(port, "port", allow_zero=False)
     try:
         targets = list_targets_from_port(host, port, timeout=timeout)
         for t in targets:
@@ -1388,6 +1462,8 @@ def list_targets_from_port(
     timeout: float = 5.0,
 ) -> List[Dict]:
     """Fetch /json/list and return the list of CDP target dicts."""
+    timeout = _validate_timeout(timeout)
+    port = _validate_port(port, "port", allow_zero=False)
     url = f"http://{host}:{port}/json/list"
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         return json.loads(resp.read())
@@ -1400,6 +1476,8 @@ def new_tab_from_port(
     timeout: float = 5.0,
 ) -> Dict:
     """Open a new tab in Chrome via /json/new."""
+    timeout = _validate_timeout(timeout)
+    port = _validate_port(port, "port", allow_zero=False)
     target_url = f"http://{host}:{port}/json/new?{urllib.parse.quote(url)}"
     req = urllib.request.Request(target_url, method="PUT")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -1411,6 +1489,8 @@ def _browser_ws_url_from_version(
     port: int = 9222,
     timeout: float = 5.0,
 ) -> str:
+    timeout = _validate_timeout(timeout)
+    port = _validate_port(port, "port", allow_zero=False)
     url = f"http://{host}:{port}/json/version"
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         data = json.loads(resp.read())
@@ -1426,6 +1506,8 @@ def wait_until_ready(
     timeout: float = 10.0,
 ) -> None:
     """Poll /json/version until Chrome is ready to accept connections."""
+    timeout = _validate_timeout(timeout)
+    port = _validate_port(port, "port", allow_zero=False)
     deadline = time.monotonic() + timeout
     last_exc: Optional[Exception] = None
     while time.monotonic() < deadline:
@@ -1617,11 +1699,8 @@ def launch_chrome(
     ready_timeout: float = 10.0,
 ) -> LaunchedChrome:
     """Launch Chrome with remote debugging enabled and return endpoint metadata."""
-    if ready_timeout <= 0:
-        raise ValueError("ready_timeout must be greater than zero")
-    port = int(port)
-    if not 0 <= port <= 65535:
-        raise ValueError("port must be between 0 and 65535")
+    ready_timeout = _validate_timeout(ready_timeout, "ready_timeout")
+    port = _validate_port(port, "port", allow_zero=True)
     args = _launch_extra_args(extra_args)
     if port != 0 and _port_is_in_use("127.0.0.1", port):
         raise CDPConnectionError(f"Chrome debugging port {port} is already in use")
@@ -1642,58 +1721,51 @@ def launch_chrome(
             raise FileNotFoundError("Chrome/Chromium executable not found")
 
     owns_profile = user_data_dir is None
+    proc = None
+    stderr_path: Optional[str] = None
     if user_data_dir is None:
         user_data_dir = tempfile.mkdtemp(prefix="chrome_cdp_")
 
-    previous_marker_text: Optional[str] = None
-    marker = os.path.join(user_data_dir, "DevToolsActivePort")
-    if not owns_profile:
-        try:
-            with open(marker, "r", encoding="utf-8") as handle:
-                previous_marker_text = handle.read()
-        except OSError:
-            previous_marker_text = None
-
-    stderr_file = tempfile.NamedTemporaryFile(
-        prefix="bare_cdp_chrome_",
-        suffix=".log",
-        delete=False,
-    )
-    stderr_path = stderr_file.name
-
-    cmd = [
-        executable,
-        f"--remote-debugging-port={port}",
-        f"--user-data-dir={user_data_dir}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-extensions",
-    ]
-    if headless:
-        cmd.append("--headless=new")
-    if args:
-        cmd.extend(args)
-
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_file)
-    except Exception:
-        stderr_file.close()
+        previous_marker_text: Optional[str] = None
+        marker = os.path.join(user_data_dir, "DevToolsActivePort")
+        if not owns_profile:
+            try:
+                with open(marker, "r", encoding="utf-8") as handle:
+                    previous_marker_text = handle.read()
+            except OSError:
+                previous_marker_text = None
+
+        stderr_file = tempfile.NamedTemporaryFile(
+            prefix="bare_cdp_chrome_",
+            suffix=".log",
+            delete=False,
+        )
+        stderr_path = stderr_file.name
+
+        cmd = [
+            executable,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={user_data_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+        ]
+        if headless:
+            cmd.append("--headless=new")
+        if args:
+            cmd.extend(args)
+
         try:
-            os.remove(stderr_path)
-        except OSError:
-            pass
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_file)
+        finally:
+            stderr_file.close()
+
+        # Backward-compatible cleanup hints for callers that still pass the raw Popen
         if owns_profile:
-            shutil.rmtree(user_data_dir, ignore_errors=True)
-        raise
-    else:
-        stderr_file.close()
+            proc._bare_cdp_temp_dir = user_data_dir  # type: ignore[attr-defined]
+        proc._bare_cdp_stderr_path = stderr_path  # type: ignore[attr-defined]
 
-    # Backward-compatible cleanup hints for callers that still pass the raw Popen
-    if owns_profile:
-        proc._bare_cdp_temp_dir = user_data_dir  # type: ignore[attr-defined]
-    proc._bare_cdp_stderr_path = stderr_path  # type: ignore[attr-defined]
-
-    try:
         deadline = time.monotonic() + ready_timeout
         if port == 0:
             actual_port, browser_ws_url = _wait_for_devtools_active_port(
@@ -1733,18 +1805,27 @@ def launch_chrome(
             owns_user_data_dir=owns_profile,
             stderr_path=stderr_path,
         )
-    except Exception as exc:
-        diag = _read_file_tail(stderr_path)
-        terminate_chrome(
-            LaunchedChrome(
-                process=proc,
-                port=port,
-                browser_ws_url="",
-                user_data_dir=user_data_dir,
-                owns_user_data_dir=owns_profile,
-                stderr_path=stderr_path,
+    except BaseException as exc:
+        diag = "" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else _read_file_tail(stderr_path)
+        if proc is not None:
+            terminate_chrome(
+                LaunchedChrome(
+                    process=proc,
+                    port=port,
+                    browser_ws_url="",
+                    user_data_dir=user_data_dir,
+                    owns_user_data_dir=owns_profile,
+                    stderr_path=stderr_path,
+                )
             )
-        )
+        else:
+            if owns_profile:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
+            if stderr_path:
+                with contextlib.suppress(OSError):
+                    os.unlink(stderr_path)
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
         if diag:
             message = f"{exc}\nChrome stderr tail:\n{diag}"
             if isinstance(exc, CDPTimeoutError):
@@ -1796,12 +1877,25 @@ def _main(argv: Optional[List[str]] = None) -> int:
     cfg = load_config(args.config)
     chrome = cfg["chrome"]
     launch_mode = bool(args.launch or chrome.get("mode") == "launch")
+    follow_on_action = any([
+        args.navigate,
+        args.wait_for_selector,
+        args.click,
+        args.input_text is not None,
+        args.press,
+        args.eval,
+        args.extract_text,
+        args.extract_html,
+        args.screenshot,
+    ])
+    if launch_mode and args.new_tab and not follow_on_action:
+        parser.error("--launch --new-tab requires a follow-on action such as --eval, --navigate, --extract-text, or --screenshot")
     if launch_mode and (args.ws_url or chrome.get("ws_url")):
         parser.error("--ws-url / chrome.ws_url cannot be used with --launch or launch mode")
     host = args.host or chrome.get("host") or "127.0.0.1"
     configured_port = args.port if args.port is not None else chrome.get("port")
     port = _mode_default_port(configured_port, launch_mode)
-    timeout = float(cfg["timeouts"].get("default", 10.0))
+    timeout = _validate_timeout(cfg["timeouts"].get("default", 10.0))
     launch = None
     conn = None
     try:
@@ -1809,19 +1903,25 @@ def _main(argv: Optional[List[str]] = None) -> int:
             launch = launch_chrome(
                 executable=chrome.get("executable"),
                 port=port,
-                headless=bool(chrome.get("headless", True)),
+                headless=chrome.get("headless", True),
                 user_data_dir=chrome.get("user_data_dir"),
                 extra_args=chrome.get("extra_args") or [],
             )
             host = "127.0.0.1"
             port = launch.port
 
+        ws_url = args.ws_url or chrome.get("ws_url")
         if args.new_tab:
             result = new_tab_from_port(args.new_tab, host=host, port=port, timeout=timeout)
-            print(json.dumps(result, indent=2))
-            return 0
+            if not follow_on_action:
+                print(json.dumps(result, indent=2))
+                return 0
+            ws_url = result.get("webSocketDebuggerUrl")
+            if not ws_url:
+                raise CDPConnectionError("New target did not provide webSocketDebuggerUrl")
 
-        ws_url = args.ws_url or chrome.get("ws_url") or discover_ws_url(host=host, port=port, timeout=timeout)
+        if ws_url is None:
+            ws_url = discover_ws_url(host=host, port=port, timeout=timeout)
         conn = CDPConnection(ws_url, timeout=timeout)
         if args.navigate:
             print(json.dumps(conn.navigate(args.navigate), indent=2))

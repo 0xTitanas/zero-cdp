@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-06-19
+
+### Changed
+- CLI `--new-tab` now connects follow-on actions to the newly created target instead of
+  printing the target and ignoring later flags.
+- Config loading now validates `chrome.mode`, booleans, ports, `extra_args`, and default
+  timeouts strictly instead of silently coercing typo-shaped values.
+
+### Fixed
+- Non-finite command, readiness, launch, and endpoint-helper timeouts are rejected before
+  sending frames, spawning Chrome, or touching the network.
+- `launch_chrome()` now cleans up spawned Chrome processes, temp profiles, and stderr logs
+  if startup is interrupted by `KeyboardInterrupt` / `SystemExit` or fails while creating
+  launch resources.
+- `--launch --new-tab` without any follow-on action is rejected before launch, avoiding a
+  browser that is opened, given a tab, and immediately terminated.
+
 ## [0.2.1] — 2026-06-19
 
 ### Added

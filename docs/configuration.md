@@ -39,10 +39,12 @@ bare-cdp --write-default-config bare-cdp.json   # same, using the console script
 | `chrome.executable` | string \| null | Path to Chrome/Chromium binary; auto-detected when null |
 | `chrome.user_data_dir` | string \| null | Chrome profile directory; temp dir created when null |
 | `chrome.headless` | boolean | Whether to launch in headless mode |
-| `chrome.extra_args` | array | Additional Chrome command-line flags. Launch mode rejects ownership-critical flags: `--remote-debugging-port`, `--remote-debugging-address`, and `--user-data-dir`. |
-| `timeouts.default` | number | Default timeout in seconds for all operations |
+| `chrome.extra_args` | array of strings | Additional Chrome command-line flags. Launch mode rejects ownership-critical flags: `--remote-debugging-port`, `--remote-debugging-address`, and `--user-data-dir`. |
+| `timeouts.default` | finite positive number | Default timeout in seconds for all operations |
 
 When `chrome.executable` is null, launch mode checks PATH via `shutil.which(...)`, common macOS app-bundle paths, Linux Chrome/Chromium binary names, and Windows `ProgramW6432`, `Program Files`, `Program Files (x86)`, and `LOCALAPPDATA` `chrome.exe` locations. Locked-down machines may still need an explicit executable path.
+
+Config values are validated strictly. Typos such as `"laucn"` for `chrome.mode`, string booleans such as `"false"`, string ports such as `"9222"`, non-list `extra_args`, and `NaN`/`Infinity` timeouts are rejected instead of coerced.
 
 ## Environment variables
 

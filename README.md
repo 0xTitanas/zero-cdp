@@ -32,7 +32,7 @@ browser.close()
 
 ## Why BareCDP?
 
-Sometimes you do not need a full browser automation framework. You need a compact browser actuator that can be dropped into another system and called deterministically.
+Sometimes you don't need a full browser automation framework. You need a compact browser actuator that can be dropped into another system and called deterministically.
 
 BareCDP is designed for:
 

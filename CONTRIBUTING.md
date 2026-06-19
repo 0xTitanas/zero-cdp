@@ -1,0 +1,66 @@
+# Contributing to BareCDP
+
+## The stdlib-only invariant
+
+BareCDP's core design constraint: **`bare_cdp.py` imports only Python standard-library modules**.
+No third-party packages may be added to runtime imports, even as optional dependencies.
+Before opening a PR that adds an import, verify the module is available on a stock Python
+installation without `pip install`.
+
+The test suite enforces this: the import-audit test reads `bare_cdp.py` and asserts that every
+top-level imported module resolves from stdlib.
+
+## Running the tests
+
+```bash
+# Syntax check
+python -m py_compile bare_cdp.py tests/test_bare_cdp.py
+
+# Unit tests (ResourceWarning treated as errors)
+python -W error::ResourceWarning -m unittest discover -s tests -v
+
+# CLI smoke
+python -m bare_cdp --help
+
+# After pip install:
+bare-cdp --help
+```
+
+No third-party packages are required to run the tests.
+
+## Security
+
+BareCDP controls a live browser process. A few hard constraints:
+
+- **127.0.0.1 only**: the default host is always `127.0.0.1`. Do not add code or flags that
+  bind the debugging port to a routable address without an explicit security review.
+- **Selector safety**: all CSS selectors and text values passed to JavaScript must go through
+  `json.dumps()`. New JS execution paths must follow the same pattern.
+- **No credential logging**: extraction and screenshot helpers must not log cookies, auth tokens,
+  or raw page content. If you add logging, document the sensitivity clearly.
+
+Report security issues privately before opening a public issue.
+
+## Live Chrome smoke test
+
+The live Chrome smoke is not part of the unit suite. Run this locally before submitting
+changes that touch launch, navigation, input, click, or screenshot behavior:
+
+```bash
+# Start Chrome with a throwaway profile
+chrome --remote-debugging-port=9222 \
+       --user-data-dir=/tmp/bare-cdp-smoke \
+       --headless=new \
+       --no-first-run
+
+# In another terminal
+python -m bare_cdp --navigate https://example.com --extract-text
+bare-cdp --navigate https://example.com --extract-text
+```
+
+## Pull requests
+
+- Keep the module single-file (`bare_cdp.py`).
+- Add or update unit tests for any new behavior. Tests must be stdlib-only (no pytest,
+  no third-party fixtures).
+- Update `CHANGELOG.md` under `## [Unreleased]` with a brief description of the change.

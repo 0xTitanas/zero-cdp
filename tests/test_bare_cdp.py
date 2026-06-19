@@ -13,14 +13,18 @@ Covers:
 import base64
 import hashlib
 import json
+import os
+import shutil
 import socket
 import struct
+import tempfile
 import threading
 import time
 import unittest
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable, List, Optional, Tuple
+from unittest import mock
 
 import pathlib
 import sys
@@ -93,12 +97,15 @@ class FakeCDPServer:
 
     def __init__(
         self,
-        handlers: Optional[List[Tuple[str, Optional[dict]]]] = None,
+        handlers: Optional[List[Tuple]] = None,
         inject_events: Optional[List[dict]] = None,
+        pre_frames: Optional[List[bytes]] = None,
     ):
         self.handlers = list(handlers or [])
         self.inject_events = list(inject_events or [])
+        self.pre_frames = list(pre_frames or [])
         self._received: List[dict] = []
+        self.received_opcodes: List[int] = []
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("127.0.0.1", 0))
@@ -120,6 +127,7 @@ class FakeCDPServer:
             self._sock.close()
         except Exception:
             pass
+        self._thread.join(timeout=1)
 
     def _serve(self):
         try:
@@ -161,11 +169,19 @@ class FakeCDPServer:
         conn.sendall(response.encode())
 
         # 2. Process CDP frames
-        for expected_method, result_body in self.handlers:
+        for handler in self.handlers:
+            expected_method, result_body = handler[0], handler[1]
+            after_events = handler[2] if len(handler) > 2 else []
+            for frame in self.pre_frames:
+                conn.sendall(frame)
+
             frame_data = self._recv_frame(conn)
             opcode, payload = _decode_client_frame(frame_data)
+            self.received_opcodes.append(opcode)
             msg = json.loads(payload.decode())
             self._received.append(msg)
+            self._drain_control_frames(conn)
+            self._assert_method(expected_method, msg)
 
             # Optionally inject events before the real response
             for ev in self.inject_events:
@@ -173,21 +189,53 @@ class FakeCDPServer:
                 conn.sendall(ev_frame)
 
             resp: dict = {"id": msg["id"]}
-            if result_body is not None:
+            if isinstance(result_body, dict) and "__raw_response__" in result_body:
+                resp.update(result_body["__raw_response__"])
+            elif result_body is not None:
                 resp["result"] = result_body
             resp_frame = _encode_server_frame(json.dumps(resp).encode())
             conn.sendall(resp_frame)
 
-    def _recv_frame(self, conn: socket.socket, bufsize: int = 65536) -> bytes:
-        buf = b""
-        while True:
-            chunk = conn.recv(bufsize)
+            for ev in after_events:
+                ev_frame = _encode_server_frame(json.dumps(ev).encode())
+                conn.sendall(ev_frame)
+
+    def _assert_method(self, expected_method: str, msg: dict):
+        if expected_method != "*":
+            assert msg.get("method") == expected_method, (expected_method, msg)
+
+    def _drain_control_frames(self, conn: socket.socket):
+        conn.settimeout(0.05)
+        try:
+            while True:
+                frame = self._recv_frame(conn)
+                opcode, _ = _decode_client_frame(frame)
+                self.received_opcodes.append(opcode)
+        except Exception:
+            pass
+        finally:
+            conn.settimeout(None)
+
+    def _recv_frame(self, conn: socket.socket) -> bytes:
+        first = conn.recv(2)
+        if len(first) < 2:
+            raise ConnectionError("server got EOF")
+        payload_len = first[1] & 0x7F
+        extra = b""
+        if payload_len == 126:
+            extra = conn.recv(2)
+            payload_len = struct.unpack(">H", extra)[0]
+        elif payload_len == 127:
+            extra = conn.recv(8)
+            payload_len = struct.unpack(">Q", extra)[0]
+        mask = conn.recv(4)
+        payload = b""
+        while len(payload) < payload_len:
+            chunk = conn.recv(payload_len - len(payload))
             if not chunk:
                 raise ConnectionError("server got EOF")
-            buf += chunk
-            # Minimal length check: header at least 6 bytes
-            if len(buf) >= 6:
-                return buf
+            payload += chunk
+        return first + extra + mask + payload
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +646,285 @@ class TestEndpointDiscovery(unittest.TestCase):
             self.assertEqual(result[0]["id"], "T1")
         finally:
             disco.close()
+
+
+# ---------------------------------------------------------------------------
+# Hardening regression tests
+# ---------------------------------------------------------------------------
+
+class TestExceptionHierarchy(unittest.TestCase):
+    def test_exception_hierarchy_is_backward_compatible(self):
+        self.assertTrue(issubclass(adapter.CDPConnectionError, ConnectionError))
+        self.assertTrue(issubclass(adapter.CDPProtocolError, adapter.CDPError))
+        self.assertTrue(issubclass(adapter.CDPTimeoutError, TimeoutError))
+        self.assertTrue(issubclass(adapter.CDPCommandError, RuntimeError))
+        self.assertTrue(issubclass(adapter.SelectorError, LookupError))
+        for cls in [
+            adapter.CDPConnectionError,
+            adapter.CDPProtocolError,
+            adapter.CDPTimeoutError,
+            adapter.CDPCommandError,
+            adapter.SelectorError,
+        ]:
+            self.assertTrue(issubclass(cls, adapter.CDPError))
+
+
+class TestSecurityRegressions(unittest.TestCase):
+    def test_input_text_missing_selector_raises_and_skips_insert(self):
+        raw = {
+            "result": {
+                "result": {"type": "undefined"},
+                "exceptionDetails": {"text": "Uncaught Error: selector not found: #missing"},
+            }
+        }
+        server = FakeCDPServer(handlers=[("Runtime.evaluate", {"__raw_response__": raw})])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            with self.assertRaises(adapter.SelectorError):
+                conn.input_text("#missing", "secret")
+            conn.close()
+            self.assertEqual([m["method"] for m in server.received], ["Runtime.evaluate"])
+        finally:
+            server.close()
+
+    def test_call_error_response_raises_command_error(self):
+        raw = {"error": {"code": -32000, "message": "boom"}}
+        server = FakeCDPServer(handlers=[("Runtime.evaluate", {"__raw_response__": raw})])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            with self.assertRaises(adapter.CDPCommandError):
+                conn.call("Runtime.evaluate", {"expression": "boom"})
+            conn.close()
+        finally:
+            server.close()
+
+
+class TestClickAndExtractHtml(unittest.TestCase):
+    def test_click_dispatches_mouse_events_at_element_center(self):
+        handlers = [
+            ("Runtime.evaluate", {"result": {"value": {"x": 10.0, "y": 20.0}}}),
+            ("Input.dispatchMouseEvent", {}),
+            ("Input.dispatchMouseEvent", {}),
+            ("Input.dispatchMouseEvent", {}),
+        ]
+        server = FakeCDPServer(handlers=handlers)
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            conn.click("#go")
+            conn.close()
+            methods = [m["method"] for m in server.received]
+            self.assertEqual(methods, ["Runtime.evaluate", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent"])
+            self.assertEqual(server.received[1]["params"]["type"], "mouseMoved")
+            self.assertEqual(server.received[2]["params"]["type"], "mousePressed")
+            self.assertEqual(server.received[3]["params"]["type"], "mouseReleased")
+            self.assertEqual(server.received[2]["params"]["x"], 10.0)
+            self.assertEqual(server.received[2]["params"]["y"], 20.0)
+        finally:
+            server.close()
+
+    def test_click_missing_selector_raises_selector_error(self):
+        server = FakeCDPServer(handlers=[("Runtime.evaluate", {"result": {"value": None}})])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            with self.assertRaises(adapter.SelectorError):
+                conn.click("#missing")
+            conn.close()
+        finally:
+            server.close()
+
+    def test_extract_html_selector_and_whole_document(self):
+        server = FakeCDPServer(handlers=[
+            ("Runtime.evaluate", {"result": {"value": "<main>ok</main>"}}),
+            ("Runtime.evaluate", {"result": {"value": "<html><body>ok</body></html>"}}),
+        ])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            self.assertEqual(conn.extract_html("main"), "<main>ok</main>")
+            self.assertEqual(conn.extract_html(), "<html><body>ok</body></html>")
+            conn.close()
+            self.assertIn("outerHTML", server.received[0]["params"]["expression"])
+            self.assertIn("documentElement", server.received[1]["params"]["expression"])
+        finally:
+            server.close()
+
+    def test_screenshot_decodes_and_writes_file(self):
+        png = b"fake-png-bytes"
+        server = FakeCDPServer(handlers=[("Page.captureScreenshot", {"data": base64.b64encode(png).decode()})])
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            data = conn.screenshot(path)
+            conn.close()
+            self.assertEqual(data, png)
+            self.assertEqual(pathlib.Path(path).read_bytes(), png)
+        finally:
+            server.close()
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+
+
+class TestNavigationHardening(unittest.TestCase):
+    def test_navigate_waits_for_matching_frame_stopped_loading(self):
+        events = [
+            {"method": "Page.frameStoppedLoading", "params": {"frameId": "OTHER"}},
+            {"method": "Page.frameStoppedLoading", "params": {"frameId": "F1"}},
+        ]
+        server = FakeCDPServer(handlers=[
+            ("Page.enable", {}),
+            ("Page.navigate", {"frameId": "F1"}, events),
+        ])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            result = conn.navigate("data:text/html,ok", wait=True)
+            conn.close()
+            self.assertEqual(result["frameId"], "F1")
+            self.assertEqual([m["method"] for m in server.received], ["Page.enable", "Page.navigate"])
+        finally:
+            server.close()
+
+    def test_navigate_accepts_same_document_event(self):
+        events = [
+            {"method": "Page.navigatedWithinDocument", "params": {"frameId": "F1", "url": "https://example.com/#section"}},
+        ]
+        server = FakeCDPServer(handlers=[
+            ("Page.enable", {}),
+            ("Page.navigate", {"frameId": "F1"}, events),
+        ])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            result = conn.navigate("https://example.com/#section", wait=True)
+            conn.close()
+            self.assertEqual(result["frameId"], "F1")
+        finally:
+            server.close()
+
+    def test_navigate_error_text_raises_command_error(self):
+        server = FakeCDPServer(handlers=[
+            ("Page.enable", {}),
+            ("Page.navigate", {"errorText": "net::ERR_NAME_NOT_RESOLVED"}),
+        ])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            with self.assertRaises(adapter.CDPCommandError):
+                conn.navigate("http://missing.invalid", wait=False)
+            conn.close()
+        finally:
+            server.close()
+
+    def test_navigate_wait_false_skips_event_wait(self):
+        server = FakeCDPServer(handlers=[
+            ("Page.enable", {}),
+            ("Page.navigate", {"frameId": "F1"}),
+        ])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            conn.navigate("data:text/html,ok", wait=False)
+            conn.close()
+            self.assertEqual([m["method"] for m in server.received], ["Page.enable", "Page.navigate"])
+        finally:
+            server.close()
+
+
+class TestWebSocketHardening(unittest.TestCase):
+    def test_server_ping_gets_client_pong(self):
+        ping = _encode_server_frame(b"hello", opcode=0x9)
+        server = FakeCDPServer(
+            handlers=[("Runtime.evaluate", {"result": {"value": 1}})],
+            pre_frames=[ping],
+        )
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            self.assertEqual(conn.evaluate("1"), 1)
+            conn.close()
+            self.assertIn(0xA, server.received_opcodes)
+        finally:
+            server.close()
+
+    def test_server_pong_is_ignored(self):
+        pong = _encode_server_frame(b"ignored", opcode=0xA)
+        server = FakeCDPServer(
+            handlers=[("Runtime.evaluate", {"result": {"value": 2}})],
+            pre_frames=[pong],
+        )
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            self.assertEqual(conn.evaluate("2"), 2)
+            conn.close()
+        finally:
+            server.close()
+
+    def test_oversized_frame_raises_protocol_error(self):
+        huge_header = bytes([0x81, 127]) + struct.pack(">Q", adapter._WS_MAX_PAYLOAD + 1)
+        server = FakeCDPServer(
+            handlers=[("Runtime.evaluate", {"result": {"value": 3}})],
+            pre_frames=[huge_header],
+        )
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            with self.assertRaises(adapter.CDPProtocolError):
+                conn.call("Runtime.evaluate", {"expression": "3"})
+            self.assertIsNone(conn._sock)
+            conn.close()
+        finally:
+            server.close()
+
+
+class TestLaunchAndConfigHardening(unittest.TestCase):
+    def test_wait_until_ready_success_and_timeout(self):
+        disco = FakeDiscoveryServer(targets=[])
+        try:
+            self.assertIsNone(adapter.wait_until_ready(port=disco.port, timeout=1.0))
+        finally:
+            disco.close()
+        with self.assertRaises(adapter.CDPTimeoutError):
+            adapter.wait_until_ready(port=9, timeout=0.1)
+
+    @unittest.skipUnless(os.name == "posix", "uses POSIX /usr/bin/false fixture")
+    def test_launch_chrome_detects_early_exit(self):
+        with self.assertRaises(adapter.CDPConnectionError):
+            adapter.launch_chrome(executable="/usr/bin/false", port=9, ready_timeout=0.5)
+
+    @unittest.skipUnless(os.name == "posix", "uses POSIX /bin/echo fixture")
+    def test_terminate_chrome_removes_created_profile_but_preserves_user_profile(self):
+        proc = adapter.launch_chrome(executable="/bin/echo", ready_timeout=0)
+        temp_dir = getattr(proc, "_bare_cdp_temp_dir")
+        self.assertTrue(os.path.isdir(temp_dir))
+        adapter.terminate_chrome(proc)
+        self.assertFalse(os.path.exists(temp_dir))
+
+        user_dir = tempfile.mkdtemp(prefix="barecdp-user-profile-")
+        try:
+            proc2 = adapter.launch_chrome(executable="/bin/echo", user_data_dir=user_dir, ready_timeout=0)
+            adapter.terminate_chrome(proc2)
+            self.assertTrue(os.path.isdir(user_dir))
+        finally:
+            shutil.rmtree(user_dir, ignore_errors=True)
+
+    def test_load_config_environment_overrides(self):
+        env = {
+            "BARE_CDP_HOST": "localhost",
+            "BARE_CDP_PORT": "9333",
+            "BARE_CDP_HEADLESS": "false",
+            "BARE_CDP_TIMEOUT": "2.5",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            cfg = adapter.load_config(None)
+        self.assertEqual(cfg["chrome"]["host"], "localhost")
+        self.assertEqual(cfg["chrome"]["port"], 9333)
+        self.assertFalse(cfg["chrome"]["headless"])
+        self.assertEqual(cfg["timeouts"]["default"], 2.5)
+
+    def test_context_managers_close(self):
+        server = FakeCDPServer(handlers=[])
+        try:
+            with adapter.CDPConnection(server.ws_url) as conn:
+                self.assertIsNotNone(conn._sock)
+            self.assertIsNone(conn._sock)
+        finally:
+            server.close()
 
 
 # ---------------------------------------------------------------------------

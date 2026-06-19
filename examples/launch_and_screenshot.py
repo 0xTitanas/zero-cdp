@@ -1,4 +1,4 @@
-from bare_cdp import Browser, launch_chrome
+from bare_cdp import Browser, launch_chrome, terminate_chrome
 
 
 def main():
@@ -11,7 +11,7 @@ def main():
         print("wrote example.png")
     finally:
         browser.close()
-        proc.terminate()
+        terminate_chrome(proc)
 
 
 if __name__ == "__main__":

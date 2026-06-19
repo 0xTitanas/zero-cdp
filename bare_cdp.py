@@ -21,12 +21,16 @@ Quick start with a running Chrome debug port:
 
 Launch Chrome from Python:
 
-    from bare_cdp import Browser, launch_chrome
+    from bare_cdp import Browser, launch_chrome, terminate_chrome
 
     proc = launch_chrome(port=9222, headless=True)
-    page = Browser(port=9222).connect()
-    page.navigate("https://example.com")
-    proc.terminate()
+    browser = Browser(port=9222)
+    try:
+        page = browser.connect()
+        page.navigate("https://example.com")
+    finally:
+        browser.close()
+        terminate_chrome(proc)
 
 Use a JSON config file:
 
@@ -45,10 +49,12 @@ CLI examples:
 
 import argparse
 import base64
+import collections
 import copy
 import hashlib
 import json
 import os
+import shutil
 import socket
 import ssl
 import struct
@@ -56,9 +62,9 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -68,6 +74,35 @@ _WS_OPCODE_BINARY = 0x2
 _WS_OPCODE_CLOSE = 0x8
 _WS_OPCODE_PING = 0x9
 _WS_OPCODE_PONG = 0xA
+_WS_MAX_PAYLOAD = 64 * 1024 * 1024  # 64 MiB
+
+
+# ---------------------------------------------------------------------------
+# Exception hierarchy
+# ---------------------------------------------------------------------------
+
+class CDPError(Exception):
+    """Base exception for all BareCDP errors."""
+
+
+class CDPConnectionError(CDPError, ConnectionError):
+    """WebSocket or transport-level failure."""
+
+
+class CDPProtocolError(CDPError):
+    """Unexpected or malformed CDP protocol data."""
+
+
+class CDPTimeoutError(CDPError, TimeoutError):
+    """A CDP call or readiness wait exceeded its deadline."""
+
+
+class CDPCommandError(CDPError, RuntimeError):
+    """Chrome returned an error or errorText for a CDP command."""
+
+
+class SelectorError(CDPError, LookupError):
+    """A CSS selector matched no element."""
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +213,7 @@ def _recv_exactly(recv_fn, n: int) -> bytes:
     while len(buf) < n:
         chunk = recv_fn(n - len(buf))
         if not chunk:
-            raise ConnectionError("WebSocket connection closed unexpectedly")
+            raise CDPConnectionError("WebSocket connection closed unexpectedly")
         buf += chunk
     return buf
 
@@ -194,6 +229,10 @@ def _ws_decode_frame(recv_fn) -> tuple:
         payload_len = struct.unpack(">H", _recv_exactly(recv_fn, 2))[0]
     elif payload_len == 127:
         payload_len = struct.unpack(">Q", _recv_exactly(recv_fn, 8))[0]
+    if payload_len > _WS_MAX_PAYLOAD:
+        raise CDPProtocolError(
+            f"WebSocket frame too large: {payload_len} bytes (max {_WS_MAX_PAYLOAD})"
+        )
     mask_key = _recv_exactly(recv_fn, 4) if masked else b""
     raw = _recv_exactly(recv_fn, payload_len)
     payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(raw)) if masked else raw
@@ -211,7 +250,7 @@ class _WSReceiver:
         while len(self._buf) < n:
             chunk = self._sock.recv(4096)
             if not chunk:
-                raise ConnectionError("WebSocket: unexpected EOF")
+                raise CDPConnectionError("WebSocket: unexpected EOF")
             self._buf += chunk
         data, self._buf = self._buf[:n], self._buf[n:]
         return data
@@ -223,10 +262,16 @@ class _WSReceiver:
         while True:
             fin, opcode, payload = _ws_decode_frame(self._recv)
             if opcode == _WS_OPCODE_PING:
-                self.send_frame(payload, _WS_OPCODE_PONG)
+                self._sock.sendall(_ws_encode_frame(payload, _WS_OPCODE_PONG))
+                continue
+            if opcode == _WS_OPCODE_PONG:
                 continue
             if opcode == _WS_OPCODE_CLOSE:
-                raise ConnectionError("WebSocket close frame received")
+                try:
+                    self._sock.sendall(_ws_encode_frame(b"", _WS_OPCODE_CLOSE))
+                except Exception:
+                    pass
+                raise CDPConnectionError("WebSocket close frame received")
             if opcode == _WS_OPCODE_CONTINUATION:
                 fragments.append(payload)
             else:
@@ -295,8 +340,16 @@ class CDPConnection:
         self._id = 0
         self._sock: Optional[socket.socket] = None
         self._ws: Optional[_WSReceiver] = None
-        self.events: List[Dict] = []
+        self.events: collections.deque = collections.deque(maxlen=2000)
+        self._page_enabled = False
         self._connect()
+
+    def __enter__(self) -> "CDPConnection":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.close()
+        return False
 
     def _connect(self):
         parsed = urllib.parse.urlparse(self._ws_url)
@@ -308,53 +361,60 @@ class CDPConnection:
             path += "?" + parsed.query
 
         raw = socket.create_connection((host, port), timeout=self._timeout)
-        if use_ssl:
-            ctx = ssl.create_default_context()
-            raw = ctx.wrap_socket(raw, server_hostname=host)
-        raw.settimeout(self._timeout)
-        self._sock = raw
+        try:
+            if use_ssl:
+                ctx = ssl.create_default_context()
+                raw = ctx.wrap_socket(raw, server_hostname=host)
+            raw.settimeout(self._timeout)
+            self._sock = raw
 
-        key = _ws_client_key()
-        handshake = (
-            f"GET {path} HTTP/1.1\r\n"
-            f"Host: {host}:{port}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\n"
-            "\r\n"
-        )
-        raw.sendall(handshake.encode())
-
-        resp = b""
-        while b"\r\n\r\n" not in resp:
-            chunk = raw.recv(4096)
-            if not chunk:
-                raise ConnectionError("WebSocket handshake: server closed connection")
-            resp += chunk
-
-        parts = resp.split(b"\r\n\r\n", 1)
-        header_text = parts[0].decode(errors="replace")
-        leftover = parts[1] if len(parts) > 1 else b""
-
-        lines = header_text.split("\r\n")
-        if not lines[0].startswith("HTTP/1.1 101"):
-            raise ConnectionError(f"WebSocket upgrade failed: {lines[0]}")
-
-        resp_headers: Dict[str, str] = {}
-        for line in lines[1:]:
-            if ": " in line:
-                k, v = line.split(": ", 1)
-                resp_headers[k.lower()] = v
-
-        expected = _ws_accept_key(key)
-        got = resp_headers.get("sec-websocket-accept", "")
-        if got != expected:
-            raise ConnectionError(
-                f"Sec-WebSocket-Accept mismatch: expected {expected!r}, got {got!r}"
+            key = _ws_client_key()
+            handshake = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                "\r\n"
             )
+            raw.sendall(handshake.encode())
 
-        self._ws = _WSReceiver(raw, leftover)
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                chunk = raw.recv(4096)
+                if not chunk:
+                    raise CDPConnectionError("WebSocket handshake: server closed connection")
+                resp += chunk
+
+            parts = resp.split(b"\r\n\r\n", 1)
+            header_text = parts[0].decode(errors="replace")
+            leftover = parts[1] if len(parts) > 1 else b""
+
+            lines = header_text.split("\r\n")
+            if not lines[0].startswith("HTTP/1.1 101"):
+                raise CDPConnectionError(f"WebSocket upgrade failed: {lines[0]}")
+
+            resp_headers: Dict[str, str] = {}
+            for line in lines[1:]:
+                if ": " in line:
+                    k, v = line.split(": ", 1)
+                    resp_headers[k.lower()] = v
+
+            expected = _ws_accept_key(key)
+            got = resp_headers.get("sec-websocket-accept", "")
+            if got != expected:
+                raise CDPConnectionError(
+                    f"Sec-WebSocket-Accept mismatch: expected {expected!r}, got {got!r}"
+                )
+
+            self._ws = _WSReceiver(raw, leftover)
+        except Exception:
+            self._sock = None
+            try:
+                raw.close()
+            finally:
+                raise
 
     def call(
         self,
@@ -374,7 +434,7 @@ class CDPConnection:
         if params is not None and not isinstance(params, dict):
             raise TypeError("params must be a dict when provided")
         if self._ws is None or self._sock is None:
-            raise ConnectionError("CDPConnection is closed")
+            raise CDPConnectionError("CDPConnection is closed")
 
         self._id += 1
         call_id = self._id
@@ -389,26 +449,89 @@ class CDPConnection:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(f"CDP call '{method}' timed out")
+                raise CDPTimeoutError(f"CDP call '{method}' timed out")
             self._sock.settimeout(remaining)
-            _, payload = self._ws.read_message()
+            try:
+                _, payload = self._ws.read_message()
+            except socket.timeout:
+                self.close()
+                raise CDPTimeoutError(f"CDP call '{method}' timed out")
+            except (CDPProtocolError, CDPConnectionError):
+                self.close()
+                raise
             data = json.loads(payload.decode())
             if data.get("id") == call_id:
                 if "error" in data:
-                    raise RuntimeError(f"CDP error for '{method}': {data['error']}")
+                    raise CDPCommandError(f"CDP error for '{method}': {data['error']}")
                 return data.get("result", {})
             self.events.append(data)
 
     def close(self):
-        if self._ws:
-            self._ws.send_close()
-        if self._sock:
+        ws, self._ws = self._ws, None
+        sock, self._sock = self._sock, None
+        if ws:
             try:
-                self._sock.close()
+                ws.send_close()
             except Exception:
                 pass
-        self._sock = None
-        self._ws = None
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def _enable_page_domain(self):
+        """Enable the Page domain idempotently."""
+        if not self._page_enabled:
+            self.call("Page.enable")
+            self._page_enabled = True
+
+    def wait_for_event(
+        self,
+        event_name: Any,
+        predicate: Optional[Callable[[Dict], bool]] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict:
+        """Wait for one or more CDP events; drains buffered events first, then pumps socket."""
+        deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
+        event_names = {event_name} if isinstance(event_name, str) else set(event_name)
+
+        # Drain already-buffered events, consuming the first match
+        remaining_events: collections.deque = collections.deque(maxlen=2000)
+        found: Optional[Dict] = None
+        for ev in self.events:
+            if found is None and ev.get("method") in event_names:
+                params = ev.get("params", {})
+                if predicate is None or predicate(params):
+                    found = params
+                    continue
+            remaining_events.append(ev)
+        self.events = remaining_events
+        if found is not None:
+            return found
+
+        if self._ws is None or self._sock is None:
+            raise CDPConnectionError("CDPConnection is closed")
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CDPTimeoutError(f"Event {event_name!r} not received within timeout")
+            self._sock.settimeout(remaining)
+            try:
+                _, payload = self._ws.read_message()
+            except socket.timeout:
+                self.close()
+                raise CDPTimeoutError(f"Event {event_name!r} timed out")
+            except (CDPProtocolError, CDPConnectionError):
+                self.close()
+                raise
+            data = json.loads(payload.decode())
+            if data.get("method") in event_names:
+                params = data.get("params", {})
+                if predicate is None or predicate(params):
+                    return params
+            self.events.append(data)
 
     def evaluate(self, expression: str, return_by_value: bool = True, timeout: Optional[float] = None) -> Any:
         """Evaluate JavaScript in the current page and return the CDP value."""
@@ -419,14 +542,26 @@ class CDPConnection:
         )
         remote = result.get("result", {})
         if result.get("exceptionDetails"):
-            raise RuntimeError(f"Runtime.evaluate exception: {result['exceptionDetails']}")
+            raise CDPCommandError(f"Runtime.evaluate exception: {result['exceptionDetails']}")
         return remote.get("value") if return_by_value else remote
 
     def navigate(self, url: str, wait: bool = True, timeout: Optional[float] = None) -> Dict:
-        """Navigate the current page; optionally wait for document.readyState."""
+        """Navigate the current page; optionally wait for the matching navigation event."""
+        self._enable_page_domain()
         nav = self.call("Page.navigate", {"url": url}, timeout=timeout)
+        if nav.get("errorText"):
+            raise CDPCommandError(f"Page.navigate error: {nav['errorText']}")
         if wait:
-            self.wait_for_ready_state(timeout=timeout)
+            frame_id = nav.get("frameId")
+
+            def _frame_matches(params: Dict) -> bool:
+                return frame_id is None or params.get("frameId") == frame_id
+
+            self.wait_for_event(
+                ("Page.frameStoppedLoading", "Page.navigatedWithinDocument"),
+                predicate=_frame_matches,
+                timeout=timeout,
+            )
         return nav
 
     def wait_for_ready_state(self, states: tuple = ("interactive", "complete"), timeout: Optional[float] = None) -> str:
@@ -440,7 +575,7 @@ class CDPConnection:
             except Exception:
                 pass
             time.sleep(0.05)
-        raise TimeoutError(f"document.readyState did not reach {states}; last={last!r}")
+        raise CDPTimeoutError(f"document.readyState did not reach {states}; last={last!r}")
 
     def wait_for_selector(self, selector: str, timeout: Optional[float] = None) -> bool:
         deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
@@ -456,7 +591,7 @@ class CDPConnection:
             except Exception:
                 pass
             time.sleep(0.05)
-        raise TimeoutError(f"Selector {selector!r} not found within timeout")
+        raise CDPTimeoutError(f"Selector {selector!r} not found within timeout")
 
     def click(self, selector: str):
         """Click a CSS selector using real CDP mouse events when possible."""
@@ -471,7 +606,7 @@ class CDPConnection:
         )
         point = self.evaluate(js)
         if not point:
-            raise TimeoutError(f"Selector {selector!r} not found")
+            raise SelectorError(f"Selector {selector!r} not found")
         x = float(point["x"])
         y = float(point["y"])
         self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
@@ -494,7 +629,12 @@ class CDPConnection:
                 "el.dispatchEvent(new Event('change',{bubbles:true}));"
             )
         js += "return true;})()"
-        self.call("Runtime.evaluate", {"expression": js, "returnByValue": True})
+        try:
+            self.evaluate(js)
+        except CDPCommandError as exc:
+            if "selector not found" in str(exc):
+                raise SelectorError(f"Selector {selector!r} not found") from exc
+            raise
         if text:
             self.call("Input.insertText", {"text": text})
         if press_enter:
@@ -538,7 +678,7 @@ class CDPConnection:
         result = self.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         session_id = result.get("sessionId")
         if not session_id:
-            raise RuntimeError("Target.attachToTarget did not return a sessionId")
+            raise CDPCommandError("Target.attachToTarget did not return a sessionId")
         return session_id
 
 
@@ -555,6 +695,13 @@ class ChromeCDPAdapter:
         self._timeout = timeout
         self._conn: Optional[CDPConnection] = None
         self._process: Any = None
+
+    def __enter__(self) -> "ChromeCDPAdapter":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.close()
+        return False
 
     def connect(self, ws_url: Optional[str] = None) -> CDPConnection:
         if ws_url is None:
@@ -621,15 +768,12 @@ class ChromeCDPAdapter:
         return target
 
     def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
-        if self._process:
-            try:
-                self._process.terminate()
-            except Exception:
-                pass
-            self._process = None
+        conn, self._conn = self._conn, None
+        proc, self._process = self._process, None
+        if conn:
+            conn.close()
+        if proc:
+            terminate_chrome(proc)
 
     def __getattr__(self, name: str):
         """Delegate high-level actions to the active CDPConnection."""
@@ -668,7 +812,7 @@ def discover_ws_url(
         data = json.loads(resp.read())
     ws = data.get("webSocketDebuggerUrl", "")
     if not ws:
-        raise RuntimeError("No WebSocket debugger URL found")
+        raise CDPConnectionError("No WebSocket debugger URL found")
     return ws
 
 
@@ -696,12 +840,56 @@ def new_tab_from_port(
         return json.loads(resp.read())
 
 
+def wait_until_ready(
+    host: str = "127.0.0.1",
+    port: int = 9222,
+    timeout: float = 10.0,
+) -> None:
+    """Poll /json/version until Chrome is ready to accept connections."""
+    url = f"http://{host}:{port}/json/version"
+    deadline = time.monotonic() + timeout
+    last_exc: Optional[Exception] = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1.0) as resp:
+                json.loads(resp.read())
+                return
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(0.1)
+    raise CDPTimeoutError(
+        f"Chrome not ready at {host}:{port} after {timeout}s"
+    ) from last_exc
+
+
+def terminate_chrome(proc: Any, timeout: float = 5.0) -> None:
+    """Terminate a Chrome process and remove its temp profile if one was created."""
+    if proc is None:
+        return
+    temp_dir: Optional[str] = getattr(proc, "_bare_cdp_temp_dir", None)
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=2.0)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if temp_dir:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def launch_chrome(
     executable: Optional[str] = None,
     port: int = 9222,
     headless: bool = True,
     user_data_dir: Optional[str] = None,
     extra_args: Optional[List[str]] = None,
+    ready_timeout: float = 10.0,
 ) -> Any:
     """Launch Chrome with remote debugging enabled. Returns subprocess.Popen."""
     import subprocess
@@ -750,8 +938,10 @@ def launch_chrome(
         if executable is None:
             raise FileNotFoundError("Chrome/Chromium executable not found")
 
+    temp_profile: Optional[str] = None
     if user_data_dir is None:
-        user_data_dir = tempfile.mkdtemp(prefix="chrome_cdp_")
+        temp_profile = tempfile.mkdtemp(prefix="chrome_cdp_")
+        user_data_dir = temp_profile
 
     cmd = [
         executable,
@@ -766,7 +956,39 @@ def launch_chrome(
     if extra_args:
         cmd.extend(extra_args)
 
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if temp_profile is not None:
+        proc._bare_cdp_temp_dir = temp_profile  # type: ignore[attr-defined]
+
+    if ready_timeout:
+        deadline = time.monotonic() + ready_timeout
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                terminate_chrome(proc)
+                raise CDPConnectionError(
+                    f"Chrome process exited early (returncode={proc.returncode})"
+                )
+            try:
+                wait_until_ready(
+                    host="127.0.0.1",
+                    port=port,
+                    timeout=min(0.5, max(0.0, deadline - time.monotonic())),
+                )
+                return proc
+            except CDPTimeoutError:
+                pass
+        if proc.poll() is not None:
+            terminate_chrome(proc)
+            raise CDPConnectionError(
+                f"Chrome process exited early (returncode={proc.returncode})"
+            )
+        terminate_chrome(proc)
+        raise CDPTimeoutError(
+            f"Chrome did not become ready on port {port} within {ready_timeout}s"
+        )
+
+    return proc
 
 
 # ---------------------------------------------------------------------------
@@ -826,7 +1048,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         result = new_tab_from_port(args.new_tab, host=host, port=port, timeout=timeout)
         print(json.dumps(result, indent=2))
         if process:
-            process.terminate()
+            terminate_chrome(process)
         return 0
 
     ws_url = args.ws_url or cfg["chrome"].get("ws_url") or discover_ws_url(host=host, port=port, timeout=timeout)
@@ -860,10 +1082,15 @@ def _main(argv: Optional[List[str]] = None) -> int:
     finally:
         conn.close()
         if process:
-            process.terminate()
+            terminate_chrome(process)
 
     return 0
 
 
+def main(argv: Optional[List[str]] = None) -> int:
+    """Public console-script entry point."""
+    return _main(argv)
+
+
 if __name__ == "__main__":
-    sys.exit(_main())
+    sys.exit(main())

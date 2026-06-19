@@ -36,7 +36,7 @@ Sometimes you don't need a full browser automation framework. You need a compact
 
 BareCDP is designed for:
 
-- locked-down environments where package installation is painful;
+- locked-down, offline, or air-gapped environments where only Python and a Chrome binary are available;
 - internal tools that need one vendorable file;
 - orchestrator scripts that need to control a browser without becoming a framework;
 - CI smoke checks that only need navigation, extraction, screenshots, and form input;
@@ -84,7 +84,7 @@ If you need robust cross-browser testing, tracing, network routing, HAR/video ca
   - capture screenshots.
 - **Low-level escape hatch** — `CDPConnection.call(...)` for arbitrary protocol methods.
 - **Configurable** — JSON config file plus environment variable overrides.
-- **CLI included** — useful for shell scripts and quick probes.
+- **CLI included** — `python -m bare_cdp` or `bare-cdp` console script; useful for shell scripts and quick probes.
 - **Tested without Chrome** — fake stdlib WebSocket/CDP server tests protocol behavior.
 
 ## Installation
@@ -118,6 +118,8 @@ Then:
 ```python
 from bare_cdp import Browser
 ```
+
+After installation, the `bare-cdp` console script is available alongside `python -m bare_cdp`.
 
 ## Requirements
 
@@ -166,18 +168,22 @@ browser.close()
 ### Launch Chrome from Python
 
 ```python
-from bare_cdp import Browser, launch_chrome
+from bare_cdp import Browser, launch_chrome, terminate_chrome
 
-proc = launch_chrome(port=9222, headless=True)
-
+proc = launch_chrome(port=9222, headless=True)  # waits until CDP is ready
 browser = Browser(port=9222)
-page = browser.connect()
-page.navigate("https://example.com")
-print(page.extract_text())
-
-browser.close()
-proc.terminate()
+try:
+    page = browser.connect()
+    page.navigate("https://example.com")
+    print(page.extract_text())
+finally:
+    browser.close()        # closes the CDP WebSocket connection
+    terminate_chrome(proc) # stops Chrome and removes BareCDP's temp profile, if any
 ```
+
+When `user_data_dir` is not supplied, `launch_chrome()` creates a temporary directory under
+the system temp path. Call `terminate_chrome(proc)` to stop Chrome and remove that temporary
+profile. User-supplied profile directories are preserved.
 
 ### Fill a form
 
@@ -281,6 +287,7 @@ Environment overrides:
 
 ```bash
 python -m bare_cdp --help
+bare-cdp --help              # same; available after pip install
 ```
 
 Common examples:
@@ -313,10 +320,18 @@ python -m bare_cdp --config bare-cdp.json --navigate https://example.com --extra
 from bare_cdp import (
     Browser,
     CDPConnection,
+    CDPError,
+    CDPConnectionError,
+    CDPProtocolError,
+    CDPTimeoutError,
+    CDPCommandError,
+    SelectorError,
     discover_ws_url,
     list_targets_from_port,
     new_tab_from_port,
     launch_chrome,
+    wait_until_ready,
+    terminate_chrome,
 )
 ```
 
@@ -328,13 +343,19 @@ from bare_cdp import (
 - `browser.select_target(...)`
 - `browser.new_tab(url="about:blank", connect=True)`
 - `browser.close()`
+- `launch_chrome(..., ready_timeout=10.0)`
+- `wait_until_ready(host="127.0.0.1", port=9222, timeout=10.0)`
+- `terminate_chrome(proc, timeout=5.0)`
 
 ### Page / connection actions
 
 `Browser.connect()` returns a `CDPConnection` object:
 
 - `call(method, params=None, timeout=None, session_id=None)`
+- `wait_for_event(event_name, predicate=None, timeout=None)`
+- `attach_to_target(target_id)`
 - `navigate(url, wait=True, timeout=None)`
+- `wait_for_ready_state(states=("interactive", "complete"), timeout=None)`
 - `evaluate(expression, return_by_value=True, timeout=None)`
 - `wait_for_selector(selector, timeout=None)`
 - `click(selector)`
@@ -351,12 +372,19 @@ Chrome remote debugging is powerful. Treat it like local control of the browser 
 
 Recommended defaults:
 
-- Bind the debugging endpoint to `127.0.0.1`, not `0.0.0.0`.
+- Bind the debugging endpoint to `127.0.0.1`, not `0.0.0.0`. BareCDP defaults to `127.0.0.1`.
+- Do **not** pass `--remote-debugging-address` or other flags that expose the port to a
+  routable network address.
 - Use a dedicated `--user-data-dir` for automation.
-- Do not expose the debugging port to a network.
+- Do not expose the debugging port to a network or through a reverse proxy.
 - Do not log cookies, tokens, local storage, or full page dumps from authenticated apps.
 - Prefer disposable profiles for CI and untrusted pages.
 - Do not automate password or 2FA entry through generic scripts.
+
+`--remote-allow-origins` (optional): Chrome accepts this flag to restrict which web origins
+can initiate a WebSocket upgrade to the debugging port. For programmatic Python clients it
+has no effect, but it is worth setting if a browser-based DevTools client might also connect
+to the same port.
 
 A safe launch shape:
 
@@ -365,8 +393,11 @@ chrome \
   --remote-debugging-port=9222 \
   --user-data-dir=/tmp/bare-cdp-profile \
   --no-first-run \
-  --no-default-browser-check
+  --no-default-browser-check \
+  --disable-extensions
 ```
+
+See [docs/security.md](docs/security.md) for a full reference.
 
 ## Testing
 
@@ -381,9 +412,13 @@ Run the module smoke check:
 ```bash
 python -m py_compile bare_cdp.py tests/test_bare_cdp.py
 python -m bare_cdp --help
+bare-cdp --help  # after pip install
 ```
 
-The tests use only the Python standard library. They include a small fake WebSocket/CDP server to verify handshake behavior, client frame masking, CDP event filtering, text input calls, extraction calls, and endpoint discovery.
+The tests use only the Python standard library. They include a small fake WebSocket/CDP server
+to verify handshake behavior, client frame masking, CDP event filtering, selector safety,
+navigation events, WebSocket control frames, screenshot decoding, endpoint discovery, config
+overrides, and process cleanup. Run the commands above before submitting changes.
 
 ## Design notes
 
@@ -392,6 +427,7 @@ BareCDP intentionally keeps the core small:
 - one JSON-RPC command at a time per connection;
 - synchronous API by default;
 - direct CDP primitives instead of a large abstraction layer;
+- `navigate()` checks `Page.navigate` errors and waits for the matching frame load or same-document navigation event (`wait=True`);
 - JavaScript snippets use `json.dumps(...)` for safe selector/text interpolation;
 - common browser interactions are thin wrappers over CDP.
 

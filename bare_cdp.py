@@ -5,14 +5,13 @@ BareCDP: bare-metal Chrome DevTools Protocol automation for Python.
 BareCDP is a stdlib-only browser control layer for scripts and orchestrators
 that need to drive Chrome/Chromium without Playwright, Selenium, WebDriver,
 or runtime dependencies. It talks directly to Chrome's DevTools Protocol over
-an RFC-6455 WebSocket implemented with Python's standard library.
+an intentionally minimal Chrome-oriented WebSocket implemented with the Python standard library.
 
 Quick start with a running Chrome debug port:
 
     chrome --remote-debugging-port=9222 --user-data-dir=/tmp/bare-cdp-profile
 
     from bare_cdp import Browser
-
     browser = Browser(port=9222)
     browser.navigate("https://example.com")
     print(browser.extract_text())
@@ -35,8 +34,9 @@ Use a JSON config file:
     from bare_cdp import Browser
 
     browser = Browser.from_config("bare-cdp.json")
-    page = browser.page()
-    page.navigate("https://example.com")
+    browser.navigate("https://example.com")
+    print(browser.extract_text())
+    browser.close()
 
 CLI examples:
 
@@ -67,7 +67,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __author__ = "BareCDP contributors"
 __license__ = "MIT"
 __url__ = "https://github.com/0xTitanas/bare-cdp"
@@ -188,7 +188,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "chrome": {
         "mode": "connect",            # "connect" or "launch"
         "host": "127.0.0.1",
-        "port": 9222,
+        "port": None,
         "ws_url": None,
         "executable": None,
         "user_data_dir": None,
@@ -255,6 +255,34 @@ def write_default_config(path: str = "bare-cdp.json") -> str:
     return path
 
 
+def _mode_default_port(configured_port: Any, launch_mode: bool) -> int:
+    if configured_port is None:
+        return 0 if launch_mode else 9222
+    return int(configured_port)
+
+
+def _launch_extra_args(extra_args: Optional[List[str]]) -> List[str]:
+    args = list(extra_args or [])
+    reserved = {
+        "--remote-debugging-port",
+        "--remote-debugging-address",
+        "--user-data-dir",
+    }
+    for arg in args:
+        name = arg.split("=", 1)[0]
+        if name in reserved:
+            raise ValueError(f"reserved Chrome launch argument: {arg}")
+    return args
+
+
+def _port_is_in_use(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # WebSocket frame codec
 # ---------------------------------------------------------------------------
@@ -284,34 +312,52 @@ def _ws_encode_frame(payload: bytes, opcode: int = _WS_OPCODE_TEXT) -> bytes:
 
 
 def _recv_exactly(recv_fn, n: int) -> bytes:
-    buf = b""
+    buf = bytearray()
     while len(buf) < n:
         chunk = recv_fn(n - len(buf))
         if not chunk:
             raise CDPConnectionError("WebSocket connection closed unexpectedly")
-        buf += chunk
-    return buf
+        buf.extend(chunk)
+    return bytes(buf)
 
 
 def _ws_decode_frame(recv_fn) -> tuple:
     """Read one WebSocket frame; return (fin, opcode, payload)."""
     header = _recv_exactly(recv_fn, 2)
+    rsv = header[0] & 0x70
+    if rsv:
+        raise CDPProtocolError("WebSocket frame has unsupported RSV bits set")
     fin = bool(header[0] & 0x80)
     opcode = header[0] & 0x0F
     masked = bool(header[1] & 0x80)
+    if masked:
+        raise CDPProtocolError("WebSocket server frames must not be masked")
+    valid_opcodes = {
+        _WS_OPCODE_CONTINUATION,
+        _WS_OPCODE_TEXT,
+        _WS_OPCODE_BINARY,
+        _WS_OPCODE_CLOSE,
+        _WS_OPCODE_PING,
+        _WS_OPCODE_PONG,
+    }
+    if opcode not in valid_opcodes:
+        raise CDPProtocolError(f"Reserved WebSocket opcode received: {opcode:#x}")
     payload_len = header[1] & 0x7F
     if payload_len == 126:
         payload_len = struct.unpack(">H", _recv_exactly(recv_fn, 2))[0]
     elif payload_len == 127:
         payload_len = struct.unpack(">Q", _recv_exactly(recv_fn, 8))[0]
+    if opcode in {_WS_OPCODE_CLOSE, _WS_OPCODE_PING, _WS_OPCODE_PONG}:
+        if not fin:
+            raise CDPProtocolError("WebSocket control frames must not be fragmented")
+        if payload_len > 125:
+            raise CDPProtocolError("WebSocket control frame too large")
     if payload_len > _WS_MAX_PAYLOAD:
         raise CDPProtocolError(
             f"WebSocket frame too large: {payload_len} bytes (max {_WS_MAX_PAYLOAD})"
         )
-    mask_key = _recv_exactly(recv_fn, 4) if masked else b""
     raw = _recv_exactly(recv_fn, payload_len)
-    payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(raw)) if masked else raw
-    return fin, opcode, payload
+    return fin, opcode, raw
 
 
 class _WSReceiver:
@@ -319,15 +365,16 @@ class _WSReceiver:
 
     def __init__(self, sock: socket.socket, initial_buf: bytes = b""):
         self._sock = sock
-        self._buf = initial_buf
+        self._buf = bytearray(initial_buf)
 
     def _recv(self, n: int) -> bytes:
         while len(self._buf) < n:
             chunk = self._sock.recv(4096)
             if not chunk:
                 raise CDPConnectionError("WebSocket: unexpected EOF")
-            self._buf += chunk
-        data, self._buf = self._buf[:n], self._buf[n:]
+            self._buf.extend(chunk)
+        data = bytes(self._buf[:n])
+        del self._buf[:n]
         return data
 
     def read_message(self) -> tuple:
@@ -348,10 +395,18 @@ class _WSReceiver:
                     pass
                 raise CDPConnectionError("WebSocket close frame received")
             if opcode == _WS_OPCODE_CONTINUATION:
+                if base_opcode is None:
+                    raise CDPProtocolError("WebSocket continuation without an active message")
                 fragments.append(payload)
             else:
+                if base_opcode is not None:
+                    raise CDPProtocolError("New WebSocket message started before fragmented message completed")
                 base_opcode = opcode
                 fragments = [payload]
+            if sum(len(fragment) for fragment in fragments) > _WS_MAX_PAYLOAD:
+                raise CDPProtocolError(
+                    f"WebSocket message too large after fragmentation (max {_WS_MAX_PAYLOAD})"
+                )
             if fin:
                 return base_opcode, b"".join(fragments)
 
@@ -414,14 +469,24 @@ def _urls_equivalent(observed: Optional[str], expected: str) -> bool:
         scheme = parsed.scheme.lower()
         netloc = parsed.netloc.lower()
         path = parsed.path or "/"
-        if path != "/":
-            path = urllib.parse.unquote(path.rstrip("/")) or "/"
         return (scheme, netloc, path, parsed.query, parsed.fragment)
 
     try:
         return normalize(observed) == normalize(expected)
     except Exception:
         return False
+
+
+def _is_transient_evaluation_error(exc: Exception) -> bool:
+    text = str(exc)
+    return isinstance(exc, CDPCommandError) and any(
+        needle in text
+        for needle in (
+            "Execution context was destroyed",
+            "Cannot find context with specified id",
+            "Inspected target navigated",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -463,8 +528,9 @@ class CDPConnection:
 
     @property
     def events(self):
-        """Compatibility view of queued typed CDPEvent objects."""
-        return self._events
+        """Snapshot of queued typed CDPEvent objects."""
+        with self._io_lock:
+            return tuple(self._events)
 
     @property
     def dropped_event_count(self) -> int:
@@ -487,8 +553,8 @@ class CDPConnection:
 
     def _resolve_timeout(self, timeout: Optional[float]) -> float:
         value = self._timeout if timeout is None else float(timeout)
-        if value < 0:
-            raise ValueError("timeout must be non-negative")
+        if value <= 0:
+            raise ValueError("timeout must be greater than zero")
         return value
 
     def _make_deadline(self, timeout: Optional[float]) -> float:
@@ -506,14 +572,21 @@ class CDPConnection:
 
     def _connect(self):
         parsed = urllib.parse.urlparse(self._ws_url)
-        host = parsed.hostname or "127.0.0.1"
+        if parsed.scheme not in {"ws", "wss"}:
+            raise ValueError("ws_url must use ws:// or wss://")
+        if not parsed.hostname:
+            raise ValueError("ws_url must include a host")
+        host = parsed.hostname
         use_ssl = parsed.scheme == "wss"
         port = parsed.port or (443 if use_ssl else 80)
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
 
-        raw = socket.create_connection((host, port), timeout=self._timeout)
+        try:
+            raw = socket.create_connection((host, port), timeout=self._timeout)
+        except OSError as exc:
+            raise CDPConnectionError(f"Could not connect to CDP WebSocket at {self._ws_url}") from exc
         try:
             if use_ssl:
                 ctx = ssl.create_default_context()
@@ -533,14 +606,16 @@ class CDPConnection:
             )
             raw.sendall(handshake.encode())
 
-            resp = b""
+            resp = bytearray()
             while b"\r\n\r\n" not in resp:
                 chunk = raw.recv(4096)
                 if not chunk:
                     raise CDPConnectionError("WebSocket handshake: server closed connection")
-                resp += chunk
+                resp.extend(chunk)
+                if len(resp) > 65536:
+                    raise CDPConnectionError("WebSocket handshake header exceeded 65536 bytes")
 
-            parts = resp.split(b"\r\n\r\n", 1)
+            parts = bytes(resp).split(b"\r\n\r\n", 1)
             header_text = parts[0].decode(errors="replace")
             leftover = parts[1] if len(parts) > 1 else b""
 
@@ -554,6 +629,14 @@ class CDPConnection:
                     k, _, v = line.partition(":")
                     resp_headers[k.lower()] = v.strip()
 
+            upgrade = resp_headers.get("upgrade", "").lower()
+            connection_tokens = {
+                token.strip().lower()
+                for token in resp_headers.get("connection", "").split(",")
+            }
+            if upgrade != "websocket" or "upgrade" not in connection_tokens:
+                raise CDPConnectionError("WebSocket handshake missing Upgrade/Connection headers")
+
             expected = _ws_accept_key(key)
             got = resp_headers.get("sec-websocket-accept", "")
             if got != expected:
@@ -562,6 +645,12 @@ class CDPConnection:
                 )
 
             self._ws = _WSReceiver(raw, leftover)
+        except OSError as exc:
+            self._sock = None
+            try:
+                raw.close()
+            finally:
+                raise CDPConnectionError("CDP transport failed during WebSocket handshake") from exc
         except Exception:
             self._sock = None
             try:
@@ -583,6 +672,9 @@ class CDPConnection:
         except (CDPProtocolError, CDPConnectionError):
             self.close()
             raise
+        except OSError as exc:
+            self.close()
+            raise CDPConnectionError("CDP transport failed while receiving") from exc
         if opcode != _WS_OPCODE_TEXT:
             self.close()
             raise CDPProtocolError(
@@ -644,6 +736,7 @@ class CDPConnection:
             raise ValueError("session_id must be a non-empty string when provided")
         with self._io_lock:
             self._ensure_open()
+            duration = self._resolve_timeout(timeout)
             self._id += 1
             call_id = self._id
             msg: Dict[str, Any] = {"id": call_id, "method": method}
@@ -651,32 +744,42 @@ class CDPConnection:
                 msg["params"] = params
             if session_id is not None:
                 msg["sessionId"] = session_id
-            self._ws.send_text(json.dumps(msg, separators=(",", ":")))  # type: ignore[union-attr]
+            encoded = json.dumps(msg, separators=(",", ":"))
+            deadline = time.monotonic() + duration
+            try:
+                self._ws.send_text(encoded)  # type: ignore[union-attr]
 
-            deadline = self._make_deadline(timeout)
-            while True:
-                data = self._read_cdp_message(deadline)
-                if "method" in data:
-                    self._queue_event(data)
-                    continue
-                if data.get("id") != call_id:
-                    self.close()
-                    raise CDPProtocolError(
-                        f"Unexpected CDP response id {data.get('id')!r}; expected {call_id}"
-                    )
-                response_session = data.get("sessionId")
-                if response_session != session_id:
-                    self.close()
-                    raise CDPProtocolError(
-                        f"Response session mismatch: expected {session_id!r}, received {response_session!r}"
-                    )
-                if "error" in data:
-                    raise CDPCommandError.from_response(
-                        method=method,
-                        response=data["error"],
-                        session_id=session_id,
-                    )
-                return data.get("result", {})
+                while True:
+                    data = self._read_cdp_message(deadline)
+                    if "method" in data:
+                        self._queue_event(data)
+                        continue
+                    if data.get("id") != call_id:
+                        self.close()
+                        raise CDPProtocolError(
+                            f"Unexpected CDP response id {data.get('id')!r}; expected {call_id}"
+                        )
+                    response_session = data.get("sessionId")
+                    if response_session != session_id:
+                        self.close()
+                        raise CDPProtocolError(
+                            f"Response session mismatch: expected {session_id!r}, received {response_session!r}"
+                        )
+                    if "error" in data:
+                        raise CDPCommandError.from_response(
+                            method=method,
+                            response=data["error"],
+                            session_id=session_id,
+                        )
+                    return data.get("result", {})
+            except CDPTimeoutError:
+                self.close()
+                raise
+            except OSError as exc:
+                self.close()
+                raise CDPConnectionError(
+                    f"CDP transport failed during {method}"
+                ) from exc
 
     def close(self):
         with self._io_lock:
@@ -830,33 +933,60 @@ class CDPConnection:
             return nav
 
     def wait_for_ready_state(self, states: tuple = ("interactive", "complete"), timeout: Optional[float] = None) -> str:
-        deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
+        deadline = self._make_deadline(timeout)
         last = ""
+        last_transient: Optional[Exception] = None
         while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                last = self.evaluate("document.readyState", timeout=max(0.1, deadline - time.monotonic())) or ""
+                last = self.evaluate("document.readyState", timeout=max(0.001, remaining)) or ""
                 if last in states:
                     return last
-            except Exception:
-                pass
-            time.sleep(0.05)
-        raise CDPTimeoutError(f"document.readyState did not reach {states}; last={last!r}")
+            except CDPCommandError as exc:
+                if not _is_transient_evaluation_error(exc):
+                    raise
+                last_transient = exc
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        raise CDPTimeoutError(
+            f"document.readyState did not reach {states}; last={last!r}"
+        ) from last_transient
 
     def wait_for_selector(self, selector: str, timeout: Optional[float] = None) -> bool:
-        deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
+        deadline = self._make_deadline(timeout)
+        last_transient: Optional[Exception] = None
+        selector_j = json.dumps(selector)
+        expression = (
+            "(function(){"
+            "try{"
+            f"var el=document.querySelector({selector_j});"
+            "return {valid:true,found:el!==null};"
+            "}catch(error){"
+            "return {valid:false,name:error.name,message:error.message};"
+            "}"
+            "})()"
+        )
         while time.monotonic() < deadline:
-            remaining = max(0.1, deadline - time.monotonic())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                value = self.evaluate(
-                    f"!!document.querySelector({json.dumps(selector)})",
-                    timeout=remaining,
-                )
-                if value:
+                value = self.evaluate(expression, timeout=max(0.001, remaining))
+                if isinstance(value, dict):
+                    if value.get("valid") is False:
+                        detail = value.get("message") or value.get("name") or "selector rejected by querySelector"
+                        raise SelectorError(f"Invalid selector {selector!r}: {detail}")
+                    if value.get("found"):
+                        return True
+                elif value:
                     return True
-            except Exception:
-                pass
-            time.sleep(0.05)
-        raise CDPTimeoutError(f"Selector {selector!r} not found within timeout")
+            except CDPCommandError as exc:
+                if not _is_transient_evaluation_error(exc):
+                    raise
+                last_transient = exc
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        raise CDPTimeoutError(f"Selector {selector!r} not found within timeout") from last_transient
 
     def click(self, selector: str):
         """Click a CSS selector using real CDP mouse events when possible."""
@@ -876,8 +1006,8 @@ class CDPConnection:
             x = float(point["x"])
             y = float(point["y"])
             self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
-            self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-            self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
+            self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1})
+            self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "buttons": 0, "clickCount": 1})
 
     def input_text(self, selector: str, text: str, clear: bool = True, press_enter: bool = False):
         """Focus element, optionally clear, insert text, optionally press Enter."""
@@ -908,11 +1038,12 @@ class CDPConnection:
                 self.press("Enter")
 
     def press(self, key: str):
-        info = _key_event_info(key)
-        down = {"type": "keyDown", **info}
-        up = {"type": "keyUp", **info}
-        self.call("Input.dispatchKeyEvent", down)
-        self.call("Input.dispatchKeyEvent", up)
+        with self.transaction():
+            info = _key_event_info(key)
+            down = {"type": "keyDown", **info}
+            up = {"type": "keyUp", **info}
+            self.call("Input.dispatchKeyEvent", down)
+            self.call("Input.dispatchKeyEvent", up)
 
     def extract_text(self, selector: Optional[str] = None) -> str:
         """Extract innerText from a selector element, or document.body."""
@@ -1034,21 +1165,31 @@ class ChromeCDPAdapter:
         cfg = load_config(path)
         chrome = cfg["chrome"]
         timeout = float(cfg["timeouts"].get("default", 10.0))
-        browser = cls(host=chrome.get("host", "127.0.0.1"), port=int(chrome.get("port", 9222)), timeout=timeout)
-        if chrome.get("mode") == "launch":
-            launch = launch_chrome(
-                executable=chrome.get("executable"),
-                port=int(chrome.get("port", 0)),
-                headless=bool(chrome.get("headless", True)),
-                user_data_dir=chrome.get("user_data_dir"),
-                extra_args=chrome.get("extra_args") or [],
-            )
-            browser._launch = launch
-            browser._process = launch.process
-            browser._port = launch.port
-        if chrome.get("ws_url"):
-            browser.connect(chrome["ws_url"])
-        return browser
+        launch_mode = chrome.get("mode") == "launch"
+        if launch_mode and chrome.get("ws_url"):
+            raise ValueError("chrome.ws_url cannot be used with launch mode")
+        host = chrome.get("host") or "127.0.0.1"
+        port = _mode_default_port(chrome.get("port"), launch_mode)
+        browser = cls(host=host, port=port, timeout=timeout)
+        try:
+            if launch_mode:
+                launch = launch_chrome(
+                    executable=chrome.get("executable"),
+                    port=port,
+                    headless=bool(chrome.get("headless", True)),
+                    user_data_dir=chrome.get("user_data_dir"),
+                    extra_args=chrome.get("extra_args") or [],
+                )
+                browser._launch = launch
+                browser._process = launch.process
+                browser._host = "127.0.0.1"
+                browser._port = launch.port
+            elif chrome.get("ws_url"):
+                browser.connect(chrome["ws_url"])
+            return browser
+        except BaseException:
+            browser.close()
+            raise
 
     def page(self) -> CDPConnection:
         """Return the current page connection, connecting lazily if needed."""
@@ -1476,6 +1617,14 @@ def launch_chrome(
     ready_timeout: float = 10.0,
 ) -> LaunchedChrome:
     """Launch Chrome with remote debugging enabled and return endpoint metadata."""
+    if ready_timeout <= 0:
+        raise ValueError("ready_timeout must be greater than zero")
+    port = int(port)
+    if not 0 <= port <= 65535:
+        raise ValueError("port must be between 0 and 65535")
+    args = _launch_extra_args(extra_args)
+    if port != 0 and _port_is_in_use("127.0.0.1", port):
+        raise CDPConnectionError(f"Chrome debugging port {port} is already in use")
     if executable is None:
         for c in _chrome_executable_candidates():
             try:
@@ -1522,8 +1671,8 @@ def launch_chrome(
     ]
     if headless:
         cmd.append("--headless=new")
-    if extra_args:
-        cmd.extend(extra_args)
+    if args:
+        cmd.extend(args)
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_file)
@@ -1543,16 +1692,6 @@ def launch_chrome(
     if owns_profile:
         proc._bare_cdp_temp_dir = user_data_dir  # type: ignore[attr-defined]
     proc._bare_cdp_stderr_path = stderr_path  # type: ignore[attr-defined]
-
-    if ready_timeout == 0:
-        return LaunchedChrome(
-            process=proc,
-            port=port,
-            browser_ws_url="",
-            user_data_dir=user_data_dir,
-            owns_user_data_dir=owns_profile,
-            stderr_path=stderr_path,
-        )
 
     try:
         deadline = time.monotonic() + ready_timeout
@@ -1627,7 +1766,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", help="Path to a BareCDP JSON config file")
     p.add_argument("--write-default-config", metavar="FILE", help="Write a default config file and exit")
     p.add_argument("--host", help="Debugging host (default: config or 127.0.0.1)")
-    p.add_argument("--port", type=int, help="Debugging port (default: config or 9222)")
+    p.add_argument("--port", type=int, help="Debugging port (default: 9222 in connect mode, ephemeral in launch mode)")
     p.add_argument("--ws-url", dest="ws_url", metavar="URL", help="Direct WebSocket URL (skips discovery)")
     p.add_argument("--launch", action="store_true", help="Launch Chrome before connecting")
     p.add_argument("--new-tab", dest="new_tab", metavar="URL", help="Open a new tab at URL")
@@ -1655,30 +1794,35 @@ def _main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     cfg = load_config(args.config)
-    host = args.host or cfg["chrome"].get("host", "127.0.0.1")
-    port = args.port if args.port is not None else int(cfg["chrome"].get("port", 9222))
+    chrome = cfg["chrome"]
+    launch_mode = bool(args.launch or chrome.get("mode") == "launch")
+    if launch_mode and (args.ws_url or chrome.get("ws_url")):
+        parser.error("--ws-url / chrome.ws_url cannot be used with --launch or launch mode")
+    host = args.host or chrome.get("host") or "127.0.0.1"
+    configured_port = args.port if args.port is not None else chrome.get("port")
+    port = _mode_default_port(configured_port, launch_mode)
     timeout = float(cfg["timeouts"].get("default", 10.0))
-    process = None
-    if args.launch or cfg["chrome"].get("mode") == "launch":
-        process = launch_chrome(
-            executable=cfg["chrome"].get("executable"),
-            port=port,
-            headless=bool(cfg["chrome"].get("headless", True)),
-            user_data_dir=cfg["chrome"].get("user_data_dir"),
-            extra_args=cfg["chrome"].get("extra_args") or [],
-        )
-        port = process.port
-
-    if args.new_tab:
-        result = new_tab_from_port(args.new_tab, host=host, port=port, timeout=timeout)
-        print(json.dumps(result, indent=2))
-        if process:
-            terminate_chrome(process)
-        return 0
-
-    ws_url = args.ws_url or cfg["chrome"].get("ws_url") or discover_ws_url(host=host, port=port, timeout=timeout)
-    conn = CDPConnection(ws_url, timeout=timeout)
+    launch = None
+    conn = None
     try:
+        if launch_mode:
+            launch = launch_chrome(
+                executable=chrome.get("executable"),
+                port=port,
+                headless=bool(chrome.get("headless", True)),
+                user_data_dir=chrome.get("user_data_dir"),
+                extra_args=chrome.get("extra_args") or [],
+            )
+            host = "127.0.0.1"
+            port = launch.port
+
+        if args.new_tab:
+            result = new_tab_from_port(args.new_tab, host=host, port=port, timeout=timeout)
+            print(json.dumps(result, indent=2))
+            return 0
+
+        ws_url = args.ws_url or chrome.get("ws_url") or discover_ws_url(host=host, port=port, timeout=timeout)
+        conn = CDPConnection(ws_url, timeout=timeout)
         if args.navigate:
             print(json.dumps(conn.navigate(args.navigate), indent=2))
         if args.wait_for_selector:
@@ -1705,9 +1849,10 @@ def _main(argv: Optional[List[str]] = None) -> int:
             conn.screenshot(args.screenshot)
             print(f"Screenshot saved: {args.screenshot}")
     finally:
-        conn.close()
-        if process:
-            terminate_chrome(process)
+        if conn is not None:
+            conn.close()
+        if launch is not None:
+            terminate_chrome(launch)
 
     return 0
 

@@ -7,6 +7,8 @@ port as equivalent to local shell access to the browser.
 
 - **Always bind to `127.0.0.1`** (the BareCDP default). Never pass `--remote-debugging-address`
   or any flag that exposes the port to a routable address.
+- `launch_chrome()` owns the debugging endpoint. It rejects `extra_args` that would override
+  that ownership: `--remote-debugging-port`, `--remote-debugging-address`, and `--user-data-dir`.
 - Do not expose the debugging port through a reverse proxy, SSH tunnel to an untrusted host,
   or any network path reachable from outside the machine.
 - Firewall the port if other users share the machine.

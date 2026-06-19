@@ -2,10 +2,10 @@
   "chrome": {
     "mode": "connect",
     "host": "127.0.0.1",
-    "port": 9222,
+    "port": null,
     "ws_url": null,
     "executable": null,
-    "user_data_dir": "./.chrome-profile",
+    "user_data_dir": null,
     "headless": true,
     "extra_args": []
   },

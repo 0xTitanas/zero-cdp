@@ -5,12 +5,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-06-19
+
 ### Added
 - Explicit `Browser` / `ChromeCDPAdapter` pass-through methods for common page actions,
   making orchestrator-facing verbs discoverable to readers, IDEs, and type checkers.
 - Single-file provenance metadata (`__author__`, `__license__`, `__url__`) for vendored copies.
+- Regression coverage for mode-dependent launch ports, command-timeout desynchronization,
+  setup cleanup, atomic key presses, invalid selectors, immutable event snapshots, and URL matching.
+
+### Changed
+- Config and CLI launch mode now default to an ephemeral Chrome-selected debugging port;
+  connect mode still derives `9222` when no port is configured.
+- Launch mode rejects `ws_url` and ownership-critical `extra_args` that could point BareCDP
+  at a browser other than the one it spawned.
+- `CDPConnection.events` now returns an immutable tuple snapshot; use `recent_events()` for
+  copied bounded history.
+- `press()` now holds a transaction across key-down and key-up.
+- README wording now describes the built-in WebSocket path as minimal and Chrome-oriented,
+  not a general-purpose RFC-6455 client.
+- WebSocket frame/handshake handling now rejects masked server frames, unsupported RSV bits,
+  reserved opcodes, malformed control frames, and oversized handshake headers; buffering now
+  uses mutable buffers for reads.
+
+### Fixed
+- A command timeout now closes the connection after a command has been sent, preventing late
+  responses from contaminating subsequent calls.
+- Negative and zero command timeouts are validated before sending a frame.
+- Send-side and receive-side transport failures now close the connection and surface as
+  `CDPConnectionError` where appropriate.
+- CLI and config launch setup failures now clean up launched Chrome resources.
+- `wait_for_ready_state()` and `wait_for_selector()` now propagate permanent CDP/connection
+  failures instead of hiding them as generic timeouts.
+- Invalid selector syntax now raises `SelectorError` immediately during selector waits.
+- `click()` now sets the CDP `buttons` bitfield for mouse press/release events.
+- Same-document URL comparison no longer collapses distinct non-root paths that differ by
+  trailing slash or percent encoding.
+- `launch_chrome()` now rejects nonpositive `ready_timeout` values and occupied explicit
+  nonzero debugging ports before spawning Chrome.
 
 ### Documented
+- Added README/configuration guidance for mode-dependent port defaults and launch-mode `ws_url`
+  rejection.
 - Added README vendoring guidance with source, issue tracker, and license links.
 
 ## [0.2.0] — 2026-06-19

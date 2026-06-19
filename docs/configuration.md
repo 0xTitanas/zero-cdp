@@ -17,7 +17,7 @@ bare-cdp --write-default-config bare-cdp.json   # same, using the console script
   "chrome": {
     "mode": "connect",
     "host": "127.0.0.1",
-    "port": 9222,
+    "port": null,
     "ws_url": null,
     "executable": null,
     "user_data_dir": null,
@@ -34,12 +34,12 @@ bare-cdp --write-default-config bare-cdp.json   # same, using the console script
 | --- | --- | --- |
 | `chrome.mode` | `"connect"` \| `"launch"` | `connect` attaches to a running Chrome; `launch` starts it |
 | `chrome.host` | string | Debugging host (always use `127.0.0.1`) |
-| `chrome.port` | integer | Debugging port (default `9222` for connect mode; use `0` in launch mode for Chrome-selected ephemeral port) |
-| `chrome.ws_url` | string \| null | Direct WebSocket debugger URL; skips discovery |
+| `chrome.port` | integer \| null | `null` is mode-dependent: connect mode uses `9222`; launch mode uses `0` so Chrome chooses an ephemeral port. Explicit nonzero launch ports are honored only if free. |
+| `chrome.ws_url` | string \| null | Direct WebSocket debugger URL; connect mode only. Launch mode rejects it to avoid controlling a browser other than the spawned process. |
 | `chrome.executable` | string \| null | Path to Chrome/Chromium binary; auto-detected when null |
 | `chrome.user_data_dir` | string \| null | Chrome profile directory; temp dir created when null |
 | `chrome.headless` | boolean | Whether to launch in headless mode |
-| `chrome.extra_args` | array | Additional Chrome command-line flags |
+| `chrome.extra_args` | array | Additional Chrome command-line flags. Launch mode rejects ownership-critical flags: `--remote-debugging-port`, `--remote-debugging-address`, and `--user-data-dir`. |
 | `timeouts.default` | number | Default timeout in seconds for all operations |
 
 When `chrome.executable` is null, launch mode checks PATH via `shutil.which(...)`, common macOS app-bundle paths, Linux Chrome/Chromium binary names, and Windows `ProgramW6432`, `Program Files`, `Program Files (x86)`, and `LOCALAPPDATA` `chrome.exe` locations. Locked-down machines may still need an explicit executable path.
@@ -64,9 +64,8 @@ Environment variables override the JSON file when set and non-empty.
 from bare_cdp import Browser
 
 browser = Browser.from_config("bare-cdp.json")
-page = browser.page()
-page.navigate("https://example.com")
-print(page.extract_text())
+browser.navigate("https://example.com")
+print(browser.extract_text())
 browser.close()
 ```
 

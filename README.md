@@ -16,7 +16,7 @@
 
 **BareCDP** is a small Python browser-control layer for scripts, CLIs, test harnesses, and orchestrators that need to drive Chrome or Chromium without installing Playwright, Selenium, WebDriver, `requests`, `websockets`, or any other runtime package.
 
-It talks directly to the **Chrome DevTools Protocol** over a raw RFC-6455 WebSocket implemented with the Python standard library.
+It talks directly to the **Chrome DevTools Protocol** over an intentionally minimal, Chrome-oriented WebSocket implemented with the Python standard library.
 
 ```python
 from bare_cdp import Browser
@@ -66,7 +66,7 @@ If you need robust cross-browser testing, tracing, network routing, HAR/video ca
 ## Features
 
 - **Zero runtime dependencies** — imports only Python standard-library modules.
-- **Raw WebSocket implementation** — handshake validation, masked client frames, ping/pong, close handling, fragmentation support, timeouts.
+- **Minimal Chrome-oriented WebSocket implementation** — handshake validation, masked client frames, ping/pong, close handling, fragmentation support, timeouts.
 - **CDP endpoint discovery** — `/json/list`, `/json/version`, `/json/new`.
 - **Chrome launch discovery** — PATH lookup plus common macOS, Linux, and Windows Chrome/Chromium install paths.
 - **High-level page actions**:
@@ -261,10 +261,10 @@ Example:
   "chrome": {
     "mode": "connect",
     "host": "127.0.0.1",
-    "port": 9222,
+    "port": null,
     "ws_url": null,
     "executable": null,
-    "user_data_dir": "./.chrome-profile",
+    "user_data_dir": null,
     "headless": true,
     "extra_args": []
   },
@@ -273,6 +273,12 @@ Example:
   }
 }
 ```
+
+`chrome.port: null` is mode-dependent: connect mode derives `9222`, while launch mode derives
+`0` so Chrome selects an ephemeral debugging port and BareCDP binds to the spawned process via
+`DevToolsActivePort`. Set an integer only when you intentionally want a fixed port. `ws_url` is
+connect-mode only; launch mode rejects it to avoid controlling a browser other than the one it
+just spawned.
 
 Use it:
 

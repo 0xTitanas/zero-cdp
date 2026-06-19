@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bare-cdp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Bare-metal Chrome DevTools Protocol automation for Python with zero runtime dependencies."
 readme = "README.md"
 requires-python = ">=3.9"

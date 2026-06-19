@@ -43,6 +43,8 @@ BareCDP is designed for:
 - agentic systems or non-agent systems that need a minimal browser-control primitive;
 - debugging and protocol experiments where direct CDP access is useful.
 
+BareCDP's public API is synchronous. A single `CDPConnection` sends one command at a time; systems that need parallel browser work should open separate connections, use threads or processes, or let their orchestrator own concurrency.
+
 ## What it is — and what it is not
 
 BareCDP is:
@@ -67,6 +69,7 @@ If you need robust cross-browser testing, tracing, network routing, HAR/video ca
 - **Zero runtime dependencies** — imports only Python standard-library modules.
 - **Raw WebSocket implementation** — handshake validation, masked client frames, ping/pong, close handling, fragmentation support, timeouts.
 - **CDP endpoint discovery** — `/json/list`, `/json/version`, `/json/new`.
+- **Chrome launch discovery** — PATH lookup plus common macOS, Linux, and Windows Chrome/Chromium install paths.
 - **High-level page actions**:
   - launch Chrome/Chromium;
   - connect to an existing debug port or WebSocket URL;
@@ -138,7 +141,8 @@ On macOS, the Chrome binary is often:
 ~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 ```
 
-BareCDP checks common macOS, Linux, and Chrome-for-Testing locations when launching Chrome.
+BareCDP checks common macOS, Linux, Windows, and Chrome-for-Testing locations when launching Chrome.
+On Windows, BareCDP also checks `shutil.which(...)`, `ProgramW6432`, `Program Files`, `Program Files (x86)`, and `LOCALAPPDATA` for `chrome.exe`/Chromium/Edge-compatible CDP binaries. If your machine is locked down or Chrome lives elsewhere, either pass `executable="C:\\path\\to\\chrome.exe"` to `launch_chrome()` / `chrome.executable`, or start Chrome yourself and use connect mode.
 
 ## Quick start
 
@@ -425,7 +429,7 @@ overrides, and process cleanup. Run the commands above before submitting changes
 BareCDP intentionally keeps the core small:
 
 - one JSON-RPC command at a time per connection;
-- synchronous API by default;
+- synchronous API only; BareCDP does not provide an async client today;
 - direct CDP primitives instead of a large abstraction layer;
 - `navigate()` checks `Page.navigate` errors and waits for the matching frame load or same-document navigation event (`wait=True`);
 - JavaScript snippets use `json.dumps(...)` for safe selector/text interpolation;
@@ -437,6 +441,7 @@ This makes the module easy to audit and easy to vendor.
 
 BareCDP does not currently provide:
 
+- an async API;
 - full Playwright-style locator semantics;
 - automatic retries around every action;
 - frame/shadow-DOM convenience wrappers;

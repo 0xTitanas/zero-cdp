@@ -18,7 +18,8 @@ Wrappers are not implemented yet.
 
 - **One command at a time**: `CDPConnection` does not multiplex concurrent CDP calls;
   commands are serialized within a single connection.
-- **No async API**: the client is synchronous; use threads for concurrent connections.
+- **No async API**: the client is synchronous and sends one command at a time per
+  `CDPConnection`; use threads, processes, or orchestrator-level fan-out for concurrent work.
 - **Deliberately small wait model**: navigation waits for the target frame to stop loading,
   and `wait_for_selector()` polls a CSS selector. BareCDP does not implement Playwright-style
   actionability checks, retrying locators, or network-idle heuristics.

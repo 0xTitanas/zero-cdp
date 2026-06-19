@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-06-19
+
+### Fixed
+- Windows launch discovery now checks PATH via `shutil.which(...)`, common `ProgramW6432`,
+  `Program Files`, `Program Files (x86)`, and `LOCALAPPDATA` `chrome.exe` locations, plus Edge-compatible CDP
+  binaries. Locked-down Windows machines can still pass `chrome.executable` / `executable=`
+  explicitly or use connect mode.
+
+### Documented
+- Clarified that BareCDP is synchronous and sends one command at a time per connection; async
+  and orchestrator-level concurrency are outside the current API.
+
 ## [0.1.1] — 2026-06-19
 
 ### Added

@@ -64,7 +64,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -883,6 +883,85 @@ def terminate_chrome(proc: Any, timeout: float = 5.0) -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _env_first(*names: str) -> Optional[str]:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+        lower = name.lower()
+        for key, candidate in os.environ.items():
+            if key.lower() == lower and candidate:
+                return candidate
+    return None
+
+
+def _path_join(root: str, *parts: str) -> str:
+    if "\\" in root or (len(root) >= 2 and root[1] == ":"):
+        return root.rstrip("\\/") + "\\" + "\\".join(parts)
+    return os.path.join(root, *parts)
+
+
+def _chrome_executable_candidates() -> List[str]:
+    """Return likely Chrome/Chromium executables for PATH, macOS, Linux, and Windows."""
+    names = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+        "chrome.exe",
+        "msedge",
+        "msedge.exe",
+    ]
+    candidates: List[str] = []
+
+    def add(path: Optional[str]) -> None:
+        if path and path not in candidates:
+            candidates.append(path)
+
+    for name in names:
+        add(shutil.which(name))
+
+    windows_roots = [
+        _env_first("ProgramFiles"),
+        _env_first("ProgramW6432", "PROGRAMW6432"),
+        _env_first("ProgramFiles(x86)", "PROGRAMFILES(X86)"),
+        _env_first("LOCALAPPDATA"),
+    ]
+    for root in windows_roots:
+        if not root:
+            continue
+        add(_path_join(root, "Google", "Chrome", "Application", "chrome.exe"))
+        add(_path_join(root, "Google", "Chrome Beta", "Application", "chrome.exe"))
+        add(_path_join(root, "Google", "Chrome Dev", "Application", "chrome.exe"))
+        add(_path_join(root, "Google", "Chrome SxS", "Application", "chrome.exe"))
+        add(_path_join(root, "Chromium", "Application", "chrome.exe"))
+        add(_path_join(root, "Microsoft", "Edge", "Application", "msedge.exe"))
+
+    homes: List[str] = []
+    for candidate in [os.path.expanduser("~"), os.environ.get("HOME", "")]:
+        if candidate and candidate not in homes:
+            homes.append(candidate)
+    try:
+        import pwd
+        passwd_home = pwd.getpwuid(os.getuid()).pw_dir
+        if passwd_home and passwd_home not in homes:
+            homes.append(passwd_home)
+    except Exception:
+        pass
+    for home in homes:
+        add(os.path.join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
+        add(os.path.join(home, "Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"))
+        add(os.path.join(home, "Applications/Chromium.app/Contents/MacOS/Chromium"))
+
+    add("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    add("/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
+    add("/Applications/Chromium.app/Contents/MacOS/Chromium")
+    for name in names:
+        add(name)
+    return candidates
+
+
 def launch_chrome(
     executable: Optional[str] = None,
     port: int = 9222,
@@ -896,34 +975,7 @@ def launch_chrome(
     import tempfile
 
     if executable is None:
-        user_app_candidates: List[str] = []
-        homes: List[str] = []
-        for candidate in [os.path.expanduser("~"), os.environ.get("HOME", "")]:
-            if candidate and candidate not in homes:
-                homes.append(candidate)
-        try:
-            import pwd
-            passwd_home = pwd.getpwuid(os.getuid()).pw_dir
-            if passwd_home and passwd_home not in homes:
-                homes.append(passwd_home)
-        except Exception:
-            pass
-        for home in homes:
-            user_app_candidates.extend([
-                os.path.join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-                os.path.join(home, "Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
-                os.path.join(home, "Applications/Chromium.app/Contents/MacOS/Chromium"),
-            ])
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            *user_app_candidates,
-            "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "google-chrome",
-            "chromium",
-            "chromium-browser",
-        ]
-        for c in candidates:
+        for c in _chrome_executable_candidates():
             try:
                 subprocess.run(
                     [c, "--version"],

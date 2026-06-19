@@ -42,6 +42,8 @@ bare-cdp --write-default-config bare-cdp.json   # same, using the console script
 | `chrome.extra_args` | array | Additional Chrome command-line flags |
 | `timeouts.default` | number | Default timeout in seconds for all operations |
 
+When `chrome.executable` is null, launch mode checks PATH via `shutil.which(...)`, common macOS app-bundle paths, Linux Chrome/Chromium binary names, and Windows `ProgramW6432`, `Program Files`, `Program Files (x86)`, and `LOCALAPPDATA` `chrome.exe` locations. Locked-down machines may still need an explicit executable path.
+
 ## Environment variables
 
 Environment variables override the JSON file when set and non-empty.

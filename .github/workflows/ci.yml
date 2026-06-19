@@ -1,0 +1,78 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Syntax check
+        run: python -m py_compile bare_cdp.py tests/test_bare_cdp.py
+
+      - name: Unit tests
+        run: python -W error::ResourceWarning -m unittest discover -s tests -v
+
+      - name: CLI help
+        run: python -m bare_cdp --help
+
+      - name: Single-file stdlib-only smoke
+        run: |
+          python -S -c "import sys; sys.path.insert(0, '.'); import bare_cdp; print(bare_cdp.__version__)"
+          python -S bare_cdp.py --help
+          python -S bare_cdp.py --write-default-config "$RUNNER_TEMP/bare-cdp-smoke.json"
+
+      - name: Public safety scan
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          needles = [bytes.fromhex(value).decode() for value in [
+              '4a4152564953',
+              '4865726d6573',
+              '2f55736572732f6a6172766973',
+              '6769746875625f7061745f',
+              '424547494e2050524956415445204b4559',
+              '424547494e204f50454e5353482050524956415445204b4559',
+          ]]
+          allowed = {'.git'}
+          hits = []
+          for path in Path('.').rglob('*'):
+              if any(part in allowed for part in path.parts):
+                  continue
+              if not path.is_file():
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
+              for needle in needles:
+                  if needle in text:
+                      hits.append(f'{path}: contains {needle!r}')
+          if hits:
+              raise SystemExit('\n'.join(hits))
+          print('public safety scan OK')
+          PY
+
+      - name: Install and console-script smoke
+        run: |
+          pip install .
+          bare-cdp --help

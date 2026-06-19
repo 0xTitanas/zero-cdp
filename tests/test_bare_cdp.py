@@ -8,6 +8,7 @@ Covers:
 - input_text: focus/clear JS, Input.insertText, optional Enter
 - extract_text: selector vs whole-page
 - Endpoint discovery: /json/version and /json/list via stdlib HTTP server
+- Chrome launch discovery: PATH, macOS/Linux names, and Windows Program Files/LocalAppData
 """
 
 import base64
@@ -881,6 +882,62 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
             disco.close()
         with self.assertRaises(adapter.CDPTimeoutError):
             adapter.wait_until_ready(port=9, timeout=0.1)
+
+    def test_launch_chrome_prefers_path_candidate_from_shutil_which(self):
+        expected = r"C:\\Tools\\Chrome\\chrome.exe"
+        launched = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] != expected:
+                raise FileNotFoundError(cmd[0])
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(adapter.shutil, "which", return_value=expected), \
+             mock.patch("subprocess.run", side_effect=fake_run), \
+             mock.patch("subprocess.Popen", side_effect=lambda cmd, **kwargs: launched.append(cmd) or mock.Mock()):
+            adapter.launch_chrome(ready_timeout=0, user_data_dir="C:\\Temp\\BareCDP")
+
+        self.assertEqual(launched[0][0], expected)
+
+    def test_launch_chrome_checks_programw6432_on_windows(self):
+        env = {"ProgramW6432": "C:\\Program Files"}
+        expected = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+        launched = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] != expected:
+                raise FileNotFoundError(cmd[0])
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(adapter.shutil, "which", return_value=None), \
+             mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch("subprocess.run", side_effect=fake_run), \
+             mock.patch("subprocess.Popen", side_effect=lambda cmd, **kwargs: launched.append(cmd) or mock.Mock()):
+            adapter.launch_chrome(ready_timeout=0, user_data_dir="C:\\Temp\\BareCDP")
+
+        self.assertEqual(launched[0][0], expected)
+
+    def test_launch_chrome_checks_windows_program_files_and_local_appdata(self):
+        env = {
+            "ProgramFiles": "C:\\Program Files",
+            "ProgramFiles(x86)": "C:\\Program Files (x86)",
+            "LOCALAPPDATA": "C:\\Users\\alice\\AppData\\Local",
+        }
+        expected = "C:\\Users\\alice\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe"
+        launched = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] != expected:
+                raise FileNotFoundError(cmd[0])
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(adapter.shutil, "which", return_value=None), \
+             mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch("subprocess.run", side_effect=fake_run), \
+             mock.patch("subprocess.Popen", side_effect=lambda cmd, **kwargs: launched.append(cmd) or mock.Mock()):
+            adapter.launch_chrome(ready_timeout=0, user_data_dir="C:\\Temp\\BareCDP")
+
+        self.assertEqual(launched[0][0], expected)
 
     @unittest.skipUnless(os.name == "posix", "uses POSIX /usr/bin/false fixture")
     def test_launch_chrome_detects_early_exit(self):

@@ -432,7 +432,7 @@ class TestCDPCallIgnoresEvents(unittest.TestCase):
 
     def test_call_accepts_session_id_and_per_call_timeout(self):
         server = FakeCDPServer(
-            handlers=[("Runtime.evaluate", {"result": {"value": 7}})],
+            handlers=[("Runtime.evaluate", {"__raw_response__": {"sessionId": "SESSION-1", "result": {"result": {"value": 7}}}})],
         )
         try:
             mod = adapter
@@ -768,30 +768,55 @@ class TestClickAndExtractHtml(unittest.TestCase):
 
 
 class TestNavigationHardening(unittest.TestCase):
-    def test_navigate_waits_for_matching_frame_stopped_loading(self):
+    def test_navigate_waits_for_matching_lifecycle_loader(self):
         events = [
-            {"method": "Page.frameStoppedLoading", "params": {"frameId": "OTHER"}},
-            {"method": "Page.frameStoppedLoading", "params": {"frameId": "F1"}},
+            {"method": "Page.lifecycleEvent", "params": {"frameId": "F1", "loaderId": "OLD", "name": "load"}},
+            {"method": "Page.lifecycleEvent", "params": {"frameId": "F1", "loaderId": "NEW", "name": "load"}},
         ]
         server = FakeCDPServer(handlers=[
             ("Page.enable", {}),
-            ("Page.navigate", {"frameId": "F1"}, events),
+            ("Page.setLifecycleEventsEnabled", {}),
+            ("Page.navigate", {"frameId": "F1", "loaderId": "NEW"}, events),
         ])
         try:
             conn = adapter.CDPConnection(server.ws_url)
             result = conn.navigate("data:text/html,ok", wait=True)
             conn.close()
             self.assertEqual(result["frameId"], "F1")
-            self.assertEqual([m["method"] for m in server.received], ["Page.enable", "Page.navigate"])
+            self.assertEqual(result["loaderId"], "NEW")
+            self.assertEqual(
+                [m["method"] for m in server.received],
+                ["Page.enable", "Page.setLifecycleEventsEnabled", "Page.navigate"],
+            )
         finally:
             server.close()
 
-    def test_navigate_accepts_same_document_event(self):
+    def test_navigate_buffers_lifecycle_event_before_response(self):
+        event = {"method": "Page.lifecycleEvent", "params": {"frameId": "F1", "loaderId": "L1", "name": "load"}}
+        server = FakeCDPServer(
+            handlers=[
+                ("Page.enable", {}),
+                ("Page.setLifecycleEventsEnabled", {}),
+                ("Page.navigate", {"frameId": "F1", "loaderId": "L1"}),
+            ],
+            inject_events=[event],
+        )
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            result = conn.navigate("data:text/html,ok", wait=True)
+            conn.close()
+            self.assertEqual(result["loaderId"], "L1")
+        finally:
+            server.close()
+
+    def test_navigate_accepts_same_document_event_for_matching_url(self):
         events = [
+            {"method": "Page.navigatedWithinDocument", "params": {"frameId": "F1", "url": "https://example.com/#wrong"}},
             {"method": "Page.navigatedWithinDocument", "params": {"frameId": "F1", "url": "https://example.com/#section"}},
         ]
         server = FakeCDPServer(handlers=[
             ("Page.enable", {}),
+            ("Page.setLifecycleEventsEnabled", {}),
             ("Page.navigate", {"frameId": "F1"}, events),
         ])
         try:
@@ -802,15 +827,19 @@ class TestNavigationHardening(unittest.TestCase):
         finally:
             server.close()
 
-    def test_navigate_error_text_raises_command_error(self):
+    def test_navigate_error_text_raises_navigation_error(self):
         server = FakeCDPServer(handlers=[
             ("Page.enable", {}),
-            ("Page.navigate", {"errorText": "net::ERR_NAME_NOT_RESOLVED"}),
+            ("Page.setLifecycleEventsEnabled", {}),
+            ("Page.navigate", {"frameId": "F1", "errorText": "net::ERR_NAME_NOT_RESOLVED"}),
         ])
         try:
             conn = adapter.CDPConnection(server.ws_url)
-            with self.assertRaises(adapter.CDPCommandError):
+            with self.assertRaises(adapter.NavigationError) as ctx:
                 conn.navigate("http://missing.invalid", wait=False)
+            self.assertEqual(ctx.exception.url, "http://missing.invalid")
+            self.assertEqual(ctx.exception.error_text, "net::ERR_NAME_NOT_RESOLVED")
+            self.assertEqual(ctx.exception.frame_id, "F1")
             conn.close()
         finally:
             server.close()
@@ -818,13 +847,31 @@ class TestNavigationHardening(unittest.TestCase):
     def test_navigate_wait_false_skips_event_wait(self):
         server = FakeCDPServer(handlers=[
             ("Page.enable", {}),
-            ("Page.navigate", {"frameId": "F1"}),
+            ("Page.setLifecycleEventsEnabled", {}),
+            ("Page.navigate", {"frameId": "F1", "loaderId": "L1"}),
         ])
         try:
             conn = adapter.CDPConnection(server.ws_url)
             conn.navigate("data:text/html,ok", wait=False)
             conn.close()
-            self.assertEqual([m["method"] for m in server.received], ["Page.enable", "Page.navigate"])
+            self.assertEqual(
+                [m["method"] for m in server.received],
+                ["Page.enable", "Page.setLifecycleEventsEnabled", "Page.navigate"],
+            )
+        finally:
+            server.close()
+
+    def test_download_navigation_returns_without_load_wait(self):
+        server = FakeCDPServer(handlers=[
+            ("Page.enable", {}),
+            ("Page.setLifecycleEventsEnabled", {}),
+            ("Page.navigate", {"frameId": "F1", "loaderId": "L1", "isDownload": True}),
+        ])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            result = conn.navigate("https://example.com/file.zip", wait=True)
+            conn.close()
+            self.assertTrue(result["isDownload"])
         finally:
             server.close()
 
@@ -946,16 +993,17 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "uses POSIX /bin/echo fixture")
     def test_terminate_chrome_removes_created_profile_but_preserves_user_profile(self):
-        proc = adapter.launch_chrome(executable="/bin/echo", ready_timeout=0)
-        temp_dir = getattr(proc, "_bare_cdp_temp_dir")
+        launch = adapter.launch_chrome(executable="/bin/echo", ready_timeout=0)
+        temp_dir = launch.user_data_dir
+        self.assertTrue(launch.owns_user_data_dir)
         self.assertTrue(os.path.isdir(temp_dir))
-        adapter.terminate_chrome(proc)
+        adapter.terminate_chrome(launch)
         self.assertFalse(os.path.exists(temp_dir))
 
         user_dir = tempfile.mkdtemp(prefix="barecdp-user-profile-")
         try:
-            proc2 = adapter.launch_chrome(executable="/bin/echo", user_data_dir=user_dir, ready_timeout=0)
-            adapter.terminate_chrome(proc2)
+            launch2 = adapter.launch_chrome(executable="/bin/echo", user_data_dir=user_dir, ready_timeout=0)
+            adapter.terminate_chrome(launch2)
             self.assertTrue(os.path.isdir(user_dir))
         finally:
             shutil.rmtree(user_dir, ignore_errors=True)
@@ -982,6 +1030,295 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
             self.assertIsNone(conn._sock)
         finally:
             server.close()
+
+
+class TestV020CoreRouting(unittest.TestCase):
+    def test_empty_session_id_is_rejected_before_send(self):
+        server = FakeCDPServer(handlers=[])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            with self.assertRaisesRegex(ValueError, "session_id"):
+                conn.call("Runtime.evaluate", {"expression": "1"}, session_id="")
+            conn.close()
+            self.assertEqual(server.received, [])
+            with self.assertRaisesRegex(ValueError, "session_id"):
+                adapter.CDPSession(conn, "")
+        finally:
+            server.close()
+
+    def test_wrong_response_id_raises_protocol_error_and_closes(self):
+        server = FakeCDPServer(
+            handlers=[("Runtime.evaluate", {"__raw_response__": {"id": 999, "result": {}}})],
+        )
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            with self.assertRaises(adapter.CDPProtocolError):
+                conn.call("Runtime.evaluate", {"expression": "1"})
+            self.assertTrue(conn.closed)
+        finally:
+            server.close()
+
+    def test_response_session_mismatch_raises_protocol_error_and_closes(self):
+        server = FakeCDPServer(
+            handlers=[("Runtime.evaluate", {"__raw_response__": {"sessionId": "OTHER", "result": {}}})],
+        )
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            with self.assertRaises(adapter.CDPProtocolError):
+                conn.call("Runtime.evaluate", {"expression": "1"}, session_id="SESSION")
+            self.assertTrue(conn.closed)
+        finally:
+            server.close()
+
+    def test_events_are_session_aware_and_any_session_is_explicit(self):
+        events = [
+            {"method": "Runtime.consoleAPICalled", "sessionId": "A", "params": {"value": "a"}},
+            {"method": "Runtime.consoleAPICalled", "sessionId": "B", "params": {"value": "b"}},
+        ]
+        server = FakeCDPServer(
+            handlers=[("Runtime.evaluate", {"result": {"value": 1}})],
+            inject_events=events,
+        )
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            conn.call("Runtime.evaluate", {"expression": "1"})
+            self.assertEqual(
+                conn.wait_for_event("Runtime.consoleAPICalled", session_id="B"),
+                {"value": "b"},
+            )
+            self.assertEqual(
+                conn.wait_for_event("Runtime.consoleAPICalled", session_id=adapter.ANY_SESSION),
+                {"value": "a"},
+            )
+            conn.close()
+        finally:
+            server.close()
+
+    def test_after_sequence_ignores_earlier_buffered_event(self):
+        conn = object.__new__(adapter.CDPConnection)
+        conn._io_lock = threading.RLock()
+        conn._event_sequence = 0
+        conn._events = adapter.collections.deque(maxlen=2000)
+        conn._dropped_event_count = 0
+        conn._timeout = 1.0
+        conn._sock = None
+        conn._ws = None
+        conn._queue_event({"method": "Page.lifecycleEvent", "params": {"name": "old"}})
+        cursor = conn.event_cursor()
+        conn._queue_event({"method": "Page.lifecycleEvent", "params": {"name": "new"}})
+        self.assertEqual(
+            conn.wait_for_event("Page.lifecycleEvent", after_sequence=cursor),
+            {"name": "new"},
+        )
+
+    def test_event_queue_overflow_increments_dropped_count(self):
+        conn = object.__new__(adapter.CDPConnection)
+        conn._io_lock = threading.RLock()
+        conn._event_sequence = 0
+        conn._events = adapter.collections.deque(maxlen=2)
+        conn._dropped_event_count = 0
+        conn._timeout = 1.0
+        conn._sock = None
+        conn._ws = None
+        for idx in range(3):
+            conn._queue_event({"method": "Event", "params": {"idx": idx}})
+        self.assertEqual(conn.dropped_event_count, 1)
+        self.assertEqual([ev.params["idx"] for ev in conn.recent_events()], [1, 2])
+
+
+    def test_session_bound_wait_rejects_explicit_session_id(self):
+        session = adapter.CDPSession(mock.Mock(), "SESSION")
+        with self.assertRaisesRegex(TypeError, "already bound"):
+            session.wait_for_event("Runtime.consoleAPICalled", session_id=adapter.ANY_SESSION)
+
+    def test_two_threads_calling_same_connection_are_serialized(self):
+        server = FakeCDPServer(handlers=[
+            ("Runtime.evaluate", {"result": {"value": "one"}}),
+            ("Runtime.evaluate", {"result": {"value": "two"}}),
+        ])
+        try:
+            conn = adapter.CDPConnection(server.ws_url)
+            results = []
+            errors = []
+
+            def worker(expr):
+                try:
+                    results.append(conn.call("Runtime.evaluate", {"expression": expr})["result"]["value"])
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker, args=("1",)), threading.Thread(target=worker, args=("2",))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+            conn.close()
+            self.assertFalse(errors)
+            self.assertEqual(sorted(results), ["one", "two"])
+            self.assertEqual([msg["id"] for msg in server.received], [1, 2])
+        finally:
+            server.close()
+
+
+    def test_high_level_actions_hold_transaction_for_constituent_commands(self):
+        for action in ("navigate", "click", "input_text"):
+            conn = object.__new__(adapter.CDPConnection)
+            conn._io_lock = threading.RLock()
+            conn._timeout = 1.0
+            conn._page_enabled = False
+            state = {"active": 0, "calls": []}
+
+            @adapter.contextlib.contextmanager
+            def tx():
+                state["active"] += 1
+                try:
+                    yield
+                finally:
+                    state["active"] -= 1
+
+            def call(method, params=None, timeout=None, session_id=None):
+                self.assertGreater(state["active"], 0, f"{action} call {method} escaped transaction")
+                state["calls"].append(method)
+                if method == "Page.navigate":
+                    return {"frameId": "F1", "loaderId": "L1"}
+                if method == "Runtime.evaluate":
+                    return {"result": {"value": True}}
+                return {}
+
+            def evaluate(expression, return_by_value=True, timeout=None):
+                self.assertGreater(state["active"], 0, f"{action} evaluate escaped transaction")
+                state["calls"].append("Runtime.evaluate")
+                if action == "click":
+                    return {"x": 10, "y": 20}
+                return True
+
+            def wait_for_event(event_name, predicate=None, timeout=None, **kwargs):
+                self.assertGreater(state["active"], 0, f"{action} wait escaped transaction")
+                state["calls"].append(event_name)
+                return {}
+
+            conn.transaction = tx
+            conn.call = call
+            conn.evaluate = evaluate
+            conn.wait_for_event = wait_for_event
+            conn.event_cursor = lambda: 0
+
+            if action == "navigate":
+                conn.navigate("https://example.com")
+                self.assertIn("Page.lifecycleEvent", state["calls"])
+            elif action == "click":
+                conn.click("#button")
+                self.assertEqual(state["calls"].count("Input.dispatchMouseEvent"), 3)
+            else:
+                conn.input_text("#q", "hello", clear=False, press_enter=False)
+                self.assertIn("Input.insertText", state["calls"])
+
+
+class TestV020LaunchAndOwnership(unittest.TestCase):
+    def test_launch_chrome_port_zero_reads_and_verifies_devtools_active_port(self):
+        disco = FakeDiscoveryServer(
+            targets=[],
+            version_ws_url="ws://127.0.0.1:0/devtools/browser/BOUND",
+        )
+        # Recreate with its actual port in the browser URL.
+        disco.close()
+        disco = FakeDiscoveryServer(
+            targets=[],
+            version_ws_url=None,
+        )
+        created = []
+
+        def fake_popen(cmd, **kwargs):
+            user_dir = next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("--user-data-dir="))
+            marker = pathlib.Path(user_dir) / "DevToolsActivePort"
+            marker.write_text(f"{disco.port}\n/devtools/browser/FAKE\n")
+            proc = mock.Mock()
+            proc.poll.return_value = None
+            proc.returncode = None
+            created.append(proc)
+            return proc
+
+        try:
+            with mock.patch("subprocess.Popen", side_effect=fake_popen):
+                launch = adapter.launch_chrome(executable="/bin/echo", port=0, ready_timeout=1.0)
+            self.assertEqual(launch.port, disco.port)
+            self.assertEqual(urllib.parse.urlparse(launch.browser_ws_url).path, "/devtools/browser/FAKE")
+            self.assertTrue(launch.owns_user_data_dir)
+            adapter.terminate_chrome(launch)
+        finally:
+            disco.close()
+
+    def test_devtools_active_port_partial_write_is_retried(self):
+        disco = FakeDiscoveryServer(targets=[], version_ws_url=None)
+
+        def fake_popen(cmd, **kwargs):
+            user_dir = next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("--user-data-dir="))
+            marker = pathlib.Path(user_dir) / "DevToolsActivePort"
+            marker.write_text(str(disco.port))
+
+            def complete_marker():
+                time.sleep(0.1)
+                marker.write_text(f"{disco.port}\n/devtools/browser/FAKE\n")
+
+            threading.Thread(target=complete_marker, daemon=True).start()
+            proc = mock.Mock()
+            proc.poll.return_value = None
+            proc.returncode = None
+            return proc
+
+        try:
+            with mock.patch("subprocess.Popen", side_effect=fake_popen):
+                launch = adapter.launch_chrome(executable="/bin/echo", port=0, ready_timeout=2.0)
+            self.assertEqual(launch.port, disco.port)
+            adapter.terminate_chrome(launch)
+        finally:
+            disco.close()
+
+
+    def test_launch_chrome_popen_failure_cleans_temp_profile_and_stderr_file(self):
+        touched = {}
+
+        def fake_popen(cmd, **kwargs):
+            user_dir = next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("--user-data-dir="))
+            stderr_handle = kwargs["stderr"]
+            touched["user_dir"] = user_dir
+            touched["stderr_path"] = stderr_handle.name
+            pathlib.Path(stderr_handle.name).write_text("startup failed")
+            raise OSError("cannot spawn chrome")
+
+        with mock.patch("subprocess.Popen", side_effect=fake_popen):
+            with self.assertRaisesRegex(OSError, "cannot spawn chrome"):
+                adapter.launch_chrome(executable="/bin/echo", ready_timeout=0)
+        self.assertFalse(os.path.exists(touched["user_dir"]))
+        self.assertFalse(os.path.exists(touched["stderr_path"]))
+
+    def test_adapter_replacement_failure_leaves_old_connection_and_close_closes_all(self):
+        made = []
+
+        class FakeConnection:
+            def __init__(self, ws_url, timeout=10.0):
+                if ws_url == "bad":
+                    raise adapter.CDPConnectionError("boom")
+                self.ws_url = ws_url
+                self.closed = False
+                made.append(self)
+
+            def close(self):
+                self.closed = True
+
+        browser = adapter.ChromeCDPAdapter(timeout=1.0)
+        with mock.patch.object(adapter, "CDPConnection", FakeConnection):
+            first = browser.connect("one")
+            with self.assertRaises(adapter.CDPConnectionError):
+                browser.connect("bad")
+            self.assertIs(browser.connection, first)
+            second = browser.connect("two")
+            self.assertTrue(first.closed)
+            extra = browser.open_connection("three")
+            browser.close()
+            self.assertTrue(second.closed)
+            self.assertTrue(extra.closed)
+            self.assertTrue(all(conn.closed for conn in made))
 
 
 # ---------------------------------------------------------------------------

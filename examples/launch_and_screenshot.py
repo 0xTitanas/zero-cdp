@@ -2,8 +2,8 @@ from bare_cdp import Browser, launch_chrome, terminate_chrome
 
 
 def main():
-    proc = launch_chrome(port=9222, headless=True)
-    browser = Browser(port=9222)
+    launch = launch_chrome(headless=True)
+    browser = Browser(port=launch.port)
     try:
         page = browser.connect()
         page.navigate("https://example.com")
@@ -11,7 +11,7 @@ def main():
         print("wrote example.png")
     finally:
         browser.close()
-        terminate_chrome(proc)
+        terminate_chrome(launch)
 
 
 if __name__ == "__main__":

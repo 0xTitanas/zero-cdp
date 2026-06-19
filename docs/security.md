@@ -28,8 +28,9 @@ chrome --remote-debugging-port=9222 \
 - Pass `--user-data-dir` pointing to a directory created solely for automation.
 - For CI and untrusted pages, use a throwaway directory and delete it after the run.
 - `launch_chrome()` creates a temporary directory automatically when `user_data_dir` is
-  not specified. Call `terminate_chrome(proc)` or `Browser.close()` when using a config whose
-  `chrome.mode` is `"launch"` so BareCDP can stop Chrome and remove that temporary profile.
+  not specified, launches with an ephemeral debugging port by default, and reads Chrome's
+  `DevToolsActivePort` file to bind to the spawned process. Call `terminate_chrome(launch)`
+  or `Browser.close()` when using a config whose mode is `launch`.
   User-supplied profile directories are preserved.
 
 ## Profile hygiene

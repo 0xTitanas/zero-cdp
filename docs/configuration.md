@@ -34,7 +34,7 @@ bare-cdp --write-default-config bare-cdp.json   # same, using the console script
 | --- | --- | --- |
 | `chrome.mode` | `"connect"` \| `"launch"` | `connect` attaches to a running Chrome; `launch` starts it |
 | `chrome.host` | string | Debugging host (always use `127.0.0.1`) |
-| `chrome.port` | integer | Debugging port (default `9222`) |
+| `chrome.port` | integer | Debugging port (default `9222` for connect mode; use `0` in launch mode for Chrome-selected ephemeral port) |
 | `chrome.ws_url` | string \| null | Direct WebSocket debugger URL; skips discovery |
 | `chrome.executable` | string \| null | Path to Chrome/Chromium binary; auto-detected when null |
 | `chrome.user_data_dir` | string \| null | Chrome profile directory; temp dir created when null |

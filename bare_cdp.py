@@ -23,14 +23,14 @@ Launch Chrome from Python:
 
     from bare_cdp import Browser, launch_chrome, terminate_chrome
 
-    proc = launch_chrome(port=9222, headless=True)
-    browser = Browser(port=9222)
+    launch = launch_chrome(headless=True)
+    browser = Browser(port=launch.port)
     try:
         page = browser.connect()
         page.navigate("https://example.com")
     finally:
         browser.close()
-        terminate_chrome(proc)
+        terminate_chrome(launch)
 
 Use a JSON config file:
 
@@ -50,7 +50,9 @@ CLI examples:
 import argparse
 import base64
 import collections
+import contextlib
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -58,13 +60,16 @@ import shutil
 import socket
 import ssl
 import struct
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 
 _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -75,6 +80,29 @@ _WS_OPCODE_CLOSE = 0x8
 _WS_OPCODE_PING = 0x9
 _WS_OPCODE_PONG = 0xA
 _WS_MAX_PAYLOAD = 64 * 1024 * 1024  # 64 MiB
+
+ANY_SESSION = object()
+
+
+@dataclasses.dataclass(frozen=True)
+class CDPEvent:
+    sequence: int
+    method: str
+    params: Dict[str, Any]
+    session_id: Optional[str]
+
+
+@dataclasses.dataclass
+class LaunchedChrome:
+    process: subprocess.Popen
+    port: int
+    browser_ws_url: str
+    user_data_dir: str
+    owns_user_data_dir: bool
+    stderr_path: Optional[str] = None
+
+    def terminate(self, timeout: float = 5.0) -> None:
+        terminate_chrome(self, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +126,53 @@ class CDPTimeoutError(CDPError, TimeoutError):
 
 
 class CDPCommandError(CDPError, RuntimeError):
-    """Chrome returned an error or errorText for a CDP command."""
+    """Chrome returned an error for a CDP command."""
+
+    def __init__(
+        self,
+        message: str,
+        method: Optional[str] = None,
+        code: Optional[int] = None,
+        data: Any = None,
+        session_id: Optional[str] = None,
+    ):
+        self.method = method
+        self.code = code
+        self.message = message
+        self.data = data
+        self.session_id = session_id
+        prefix = f"{method}: " if method else ""
+        code_part = f"[{code}] " if code is not None else ""
+        super().__init__(f"{prefix}{code_part}{message}")
+
+    @classmethod
+    def from_response(
+        cls,
+        method: str,
+        response: Dict[str, Any],
+        session_id: Optional[str] = None,
+    ) -> "CDPCommandError":
+        return cls(
+            message=response.get("message", "Unknown CDP error"),
+            method=method,
+            code=response.get("code"),
+            data=response.get("data"),
+            session_id=session_id,
+        )
+
+
+class NavigationError(CDPCommandError):
+    """Page.navigate returned an errorText for the requested URL."""
+
+    def __init__(self, url: str, error_text: str, frame_id: Optional[str] = None):
+        self.url = url
+        self.error_text = error_text
+        self.frame_id = frame_id
+        super().__init__(
+            message=error_text,
+            method="Page.navigate",
+            data={"url": url, "frameId": frame_id},
+        )
 
 
 class SelectorError(CDPError, LookupError):
@@ -327,12 +401,40 @@ def _key_event_info(key: str) -> Dict[str, Any]:
     return info
 
 
+
+def _urls_equivalent(observed: Optional[str], expected: str) -> bool:
+    if observed == expected:
+        return True
+    if not observed:
+        return False
+
+    def normalize(value: str):
+        parsed = urllib.parse.urlsplit(value)
+        scheme = parsed.scheme.lower()
+        netloc = parsed.netloc.lower()
+        path = parsed.path or "/"
+        if path != "/":
+            path = urllib.parse.unquote(path.rstrip("/")) or "/"
+        return (scheme, netloc, path, parsed.query, parsed.fragment)
+
+    try:
+        return normalize(observed) == normalize(expected)
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # CDPConnection
 # ---------------------------------------------------------------------------
 
 class CDPConnection:
-    """Low-level Chrome DevTools Protocol connection over raw WebSocket."""
+    """Low-level Chrome DevTools Protocol connection over raw WebSocket.
+
+    The public contract is intentionally synchronous: one active command or
+    event wait per connection. Events that arrive while a command is pending
+    are queued with sequence numbers so later waits can correlate them without
+    permitting concurrent JSON-RPC dispatch on the same socket.
+    """
 
     def __init__(self, ws_url: str, timeout: float = 10.0):
         self._ws_url = ws_url
@@ -340,7 +442,10 @@ class CDPConnection:
         self._id = 0
         self._sock: Optional[socket.socket] = None
         self._ws: Optional[_WSReceiver] = None
-        self.events: collections.deque = collections.deque(maxlen=2000)
+        self._io_lock = threading.RLock()
+        self._event_sequence = 0
+        self._events: collections.deque = collections.deque(maxlen=2000)
+        self._dropped_event_count = 0
         self._page_enabled = False
         self._connect()
 
@@ -350,6 +455,53 @@ class CDPConnection:
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         self.close()
         return False
+
+    @property
+    def closed(self) -> bool:
+        return self._sock is None or self._ws is None
+
+    @property
+    def events(self):
+        """Compatibility view of queued typed CDPEvent objects."""
+        return self._events
+
+    @property
+    def dropped_event_count(self) -> int:
+        with self._io_lock:
+            return self._dropped_event_count
+
+    def recent_events(self) -> tuple:
+        with self._io_lock:
+            return tuple(self._events)
+
+    def event_cursor(self) -> int:
+        with self._io_lock:
+            return self._event_sequence
+
+    @contextlib.contextmanager
+    def transaction(self):
+        """Serialize a multi-command high-level operation on this connection."""
+        with self._io_lock:
+            yield
+
+    def _resolve_timeout(self, timeout: Optional[float]) -> float:
+        value = self._timeout if timeout is None else float(timeout)
+        if value < 0:
+            raise ValueError("timeout must be non-negative")
+        return value
+
+    def _make_deadline(self, timeout: Optional[float]) -> float:
+        return time.monotonic() + self._resolve_timeout(timeout)
+
+    def _remaining(self, deadline: float, operation: str) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CDPTimeoutError(f"{operation} timed out")
+        return remaining
+
+    def _ensure_open(self) -> None:
+        if self._ws is None or self._sock is None:
+            raise CDPConnectionError("CDPConnection is closed")
 
     def _connect(self):
         parsed = urllib.parse.urlparse(self._ws_url)
@@ -397,9 +549,9 @@ class CDPConnection:
 
             resp_headers: Dict[str, str] = {}
             for line in lines[1:]:
-                if ": " in line:
-                    k, v = line.split(": ", 1)
-                    resp_headers[k.lower()] = v
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    resp_headers[k.lower()] = v.strip()
 
             expected = _ws_accept_key(key)
             got = resp_headers.get("sec-websocket-accept", "")
@@ -416,6 +568,65 @@ class CDPConnection:
             finally:
                 raise
 
+    def _read_cdp_message(self, deadline: float) -> Dict[str, Any]:
+        self._ensure_open()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CDPTimeoutError("CDP receive timed out")
+        self._sock.settimeout(remaining)  # type: ignore[union-attr]
+        try:
+            opcode, payload = self._ws.read_message()  # type: ignore[union-attr]
+        except socket.timeout:
+            self.close()
+            raise CDPTimeoutError("CDP receive timed out")
+        except (CDPProtocolError, CDPConnectionError):
+            self.close()
+            raise
+        if opcode != _WS_OPCODE_TEXT:
+            self.close()
+            raise CDPProtocolError(
+                f"Expected WebSocket text message, received opcode {opcode:#x}"
+            )
+        try:
+            data = json.loads(payload.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self.close()
+            raise CDPProtocolError("Invalid CDP JSON message") from exc
+        if not isinstance(data, dict):
+            self.close()
+            raise CDPProtocolError("CDP message must be a JSON object")
+        has_id = "id" in data
+        has_method = isinstance(data.get("method"), str)
+        if has_id == has_method:
+            self.close()
+            raise CDPProtocolError("CDP message must be either a response or an event")
+        return data
+
+    def _make_event(self, data: Dict[str, Any]) -> CDPEvent:
+        params = data.get("params", {})
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            self.close()
+            raise CDPProtocolError("CDP event params must be a JSON object")
+        self._event_sequence += 1
+        return CDPEvent(
+            sequence=self._event_sequence,
+            method=data["method"],
+            params=params,
+            session_id=data.get("sessionId"),
+        )
+
+    def _append_event(self, event: CDPEvent) -> None:
+        if len(self._events) == self._events.maxlen:
+            self._dropped_event_count += 1
+        self._events.append(event)
+
+    def _queue_event(self, data: Dict[str, Any]) -> CDPEvent:
+        event = self._make_event(data)
+        self._append_event(event)
+        return event
+
     def call(
         self,
         method: str,
@@ -423,52 +634,53 @@ class CDPConnection:
         timeout: Optional[float] = None,
         session_id: Optional[str] = None,
     ) -> Dict:
-        """Send a CDP command and return the matching response result.
-
-        Event frames and out-of-order responses are retained in ``self.events``
-        and ignored until the response with this call's id arrives.
-        ``session_id`` supports flattened Target.attachToTarget sessions.
-        """
+        """Send one CDP command and return the matching response result."""
         if not method or not isinstance(method, str):
             raise ValueError("method must be a non-empty string")
         if params is not None and not isinstance(params, dict):
             raise TypeError("params must be a dict when provided")
-        if self._ws is None or self._sock is None:
-            raise CDPConnectionError("CDPConnection is closed")
+        if session_id is not None and (not isinstance(session_id, str) or not session_id):
+            raise ValueError("session_id must be a non-empty string when provided")
+        with self._io_lock:
+            self._ensure_open()
+            self._id += 1
+            call_id = self._id
+            msg: Dict[str, Any] = {"id": call_id, "method": method}
+            if params is not None:
+                msg["params"] = params
+            if session_id is not None:
+                msg["sessionId"] = session_id
+            self._ws.send_text(json.dumps(msg, separators=(",", ":")))  # type: ignore[union-attr]
 
-        self._id += 1
-        call_id = self._id
-        msg: Dict = {"id": call_id, "method": method}
-        if params is not None:
-            msg["params"] = params
-        if session_id:
-            msg["sessionId"] = session_id
-        self._ws.send_text(json.dumps(msg, separators=(",", ":")))
-
-        deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise CDPTimeoutError(f"CDP call '{method}' timed out")
-            self._sock.settimeout(remaining)
-            try:
-                _, payload = self._ws.read_message()
-            except socket.timeout:
-                self.close()
-                raise CDPTimeoutError(f"CDP call '{method}' timed out")
-            except (CDPProtocolError, CDPConnectionError):
-                self.close()
-                raise
-            data = json.loads(payload.decode())
-            if data.get("id") == call_id:
+            deadline = self._make_deadline(timeout)
+            while True:
+                data = self._read_cdp_message(deadline)
+                if "method" in data:
+                    self._queue_event(data)
+                    continue
+                if data.get("id") != call_id:
+                    self.close()
+                    raise CDPProtocolError(
+                        f"Unexpected CDP response id {data.get('id')!r}; expected {call_id}"
+                    )
+                response_session = data.get("sessionId")
+                if response_session != session_id:
+                    self.close()
+                    raise CDPProtocolError(
+                        f"Response session mismatch: expected {session_id!r}, received {response_session!r}"
+                    )
                 if "error" in data:
-                    raise CDPCommandError(f"CDP error for '{method}': {data['error']}")
+                    raise CDPCommandError.from_response(
+                        method=method,
+                        response=data["error"],
+                        session_id=session_id,
+                    )
                 return data.get("result", {})
-            self.events.append(data)
 
     def close(self):
-        ws, self._ws = self._ws, None
-        sock, self._sock = self._sock, None
+        with self._io_lock:
+            ws, self._ws = self._ws, None
+            sock, self._sock = self._sock, None
         if ws:
             try:
                 ws.send_close()
@@ -480,58 +692,74 @@ class CDPConnection:
             except Exception:
                 pass
 
-    def _enable_page_domain(self):
-        """Enable the Page domain idempotently."""
-        if not self._page_enabled:
-            self.call("Page.enable")
-            self._page_enabled = True
+    def _enable_page_domain(self, deadline: Optional[float] = None):
+        """Enable the Page domain and lifecycle events idempotently."""
+        if self._page_enabled:
+            return
+        if deadline is None:
+            deadline = self._make_deadline(None)
+        self.call("Page.enable", timeout=self._remaining(deadline, "Page.enable"))
+        self.call(
+            "Page.setLifecycleEventsEnabled",
+            {"enabled": True},
+            timeout=self._remaining(deadline, "Page.setLifecycleEventsEnabled"),
+        )
+        self._page_enabled = True
+
+    def _matches_event(
+        self,
+        event: CDPEvent,
+        event_names: set,
+        predicate: Optional[Callable[[Dict], bool]],
+        session_id: Any,
+        after_sequence: Optional[int],
+    ) -> bool:
+        if event.method not in event_names:
+            return False
+        if session_id is not ANY_SESSION and event.session_id != session_id:
+            return False
+        if after_sequence is not None and event.sequence <= after_sequence:
+            return False
+        return predicate is None or predicate(event.params)
 
     def wait_for_event(
         self,
         event_name: Any,
         predicate: Optional[Callable[[Dict], bool]] = None,
         timeout: Optional[float] = None,
+        *,
+        session_id: Any = None,
+        after_sequence: Optional[int] = None,
     ) -> Dict:
-        """Wait for one or more CDP events; drains buffered events first, then pumps socket."""
-        deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
+        """Wait for a CDP event, respecting flattened-session routing."""
         event_names = {event_name} if isinstance(event_name, str) else set(event_name)
-
-        # Drain already-buffered events, consuming the first match
-        remaining_events: collections.deque = collections.deque(maxlen=2000)
-        found: Optional[Dict] = None
-        for ev in self.events:
-            if found is None and ev.get("method") in event_names:
-                params = ev.get("params", {})
-                if predicate is None or predicate(params):
-                    found = params
+        deadline = self._make_deadline(timeout)
+        with self._io_lock:
+            remaining_events: collections.deque = collections.deque(maxlen=self._events.maxlen)
+            found: Optional[CDPEvent] = None
+            for event in self._events:
+                if found is None and self._matches_event(
+                    event, event_names, predicate, session_id, after_sequence
+                ):
+                    found = event
                     continue
-            remaining_events.append(ev)
-        self.events = remaining_events
-        if found is not None:
-            return found
+                remaining_events.append(event)
+            self._events = remaining_events
+            if found is not None:
+                return found.params
 
-        if self._ws is None or self._sock is None:
-            raise CDPConnectionError("CDPConnection is closed")
-
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise CDPTimeoutError(f"Event {event_name!r} not received within timeout")
-            self._sock.settimeout(remaining)
-            try:
-                _, payload = self._ws.read_message()
-            except socket.timeout:
-                self.close()
-                raise CDPTimeoutError(f"Event {event_name!r} timed out")
-            except (CDPProtocolError, CDPConnectionError):
-                self.close()
-                raise
-            data = json.loads(payload.decode())
-            if data.get("method") in event_names:
-                params = data.get("params", {})
-                if predicate is None or predicate(params):
-                    return params
-            self.events.append(data)
+            self._ensure_open()
+            while True:
+                data = self._read_cdp_message(deadline)
+                if "method" not in data:
+                    self.close()
+                    raise CDPProtocolError(
+                        f"Unexpected CDP response id {data.get('id')!r} while waiting for event"
+                    )
+                event = self._make_event(data)
+                if self._matches_event(event, event_names, predicate, session_id, after_sequence):
+                    return event.params
+                self._append_event(event)
 
     def evaluate(self, expression: str, return_by_value: bool = True, timeout: Optional[float] = None) -> Any:
         """Evaluate JavaScript in the current page and return the CDP value."""
@@ -542,27 +770,63 @@ class CDPConnection:
         )
         remote = result.get("result", {})
         if result.get("exceptionDetails"):
-            raise CDPCommandError(f"Runtime.evaluate exception: {result['exceptionDetails']}")
+            raise CDPCommandError(f"Runtime.evaluate exception: {result['exceptionDetails']}", method="Runtime.evaluate")
         return remote.get("value") if return_by_value else remote
 
-    def navigate(self, url: str, wait: bool = True, timeout: Optional[float] = None) -> Dict:
-        """Navigate the current page; optionally wait for the matching navigation event."""
-        self._enable_page_domain()
-        nav = self.call("Page.navigate", {"url": url}, timeout=timeout)
-        if nav.get("errorText"):
-            raise CDPCommandError(f"Page.navigate error: {nav['errorText']}")
-        if wait:
-            frame_id = nav.get("frameId")
-
-            def _frame_matches(params: Dict) -> bool:
-                return frame_id is None or params.get("frameId") == frame_id
-
-            self.wait_for_event(
-                ("Page.frameStoppedLoading", "Page.navigatedWithinDocument"),
-                predicate=_frame_matches,
-                timeout=timeout,
+    def navigate(
+        self,
+        url: str,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+        *,
+        wait_until: str = "load",
+    ) -> Dict:
+        """Navigate and correlate completion to the returned loader/session state."""
+        if wait_until not in {"commit", "DOMContentLoaded", "load"}:
+            raise ValueError("wait_until must be 'commit', 'DOMContentLoaded', or 'load'")
+        if not wait:
+            wait_until = "commit"
+        with self.transaction():
+            deadline = self._make_deadline(timeout)
+            self._enable_page_domain(deadline)
+            cursor = self.event_cursor()
+            nav = self.call(
+                "Page.navigate",
+                {"url": url},
+                timeout=self._remaining(deadline, "Page.navigate"),
             )
-        return nav
+            if nav.get("errorText"):
+                raise NavigationError(
+                    url=url,
+                    error_text=nav["errorText"],
+                    frame_id=nav.get("frameId"),
+                )
+            if wait_until == "commit" or nav.get("isDownload"):
+                return nav
+            frame_id = nav.get("frameId")
+            loader_id = nav.get("loaderId")
+            if loader_id:
+                self.wait_for_event(
+                    "Page.lifecycleEvent",
+                    predicate=lambda params: (
+                        params.get("frameId") == frame_id
+                        and params.get("loaderId") == loader_id
+                        and params.get("name") == wait_until
+                    ),
+                    timeout=self._remaining(deadline, "navigation lifecycle"),
+                    after_sequence=cursor,
+                )
+            else:
+                self.wait_for_event(
+                    "Page.navigatedWithinDocument",
+                    predicate=lambda params: (
+                        params.get("frameId") == frame_id
+                        and _urls_equivalent(params.get("url"), url)
+                    ),
+                    timeout=self._remaining(deadline, "same-document navigation"),
+                    after_sequence=cursor,
+                )
+            return nav
 
     def wait_for_ready_state(self, states: tuple = ("interactive", "complete"), timeout: Optional[float] = None) -> str:
         deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
@@ -595,50 +859,52 @@ class CDPConnection:
 
     def click(self, selector: str):
         """Click a CSS selector using real CDP mouse events when possible."""
-        js = (
-            "(function(){"
-            f"var el=document.querySelector({json.dumps(selector)});"
-            "if(!el){return null;}"
-            "el.scrollIntoView({block:'center',inline:'center'});"
-            "var r=el.getBoundingClientRect();"
-            "return {x:r.left+r.width/2,y:r.top+r.height/2};"
-            "})()"
-        )
-        point = self.evaluate(js)
-        if not point:
-            raise SelectorError(f"Selector {selector!r} not found")
-        x = float(point["x"])
-        y = float(point["y"])
-        self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
-        self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-        self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
+        with self.transaction():
+            js = (
+                "(function(){"
+                f"var el=document.querySelector({json.dumps(selector)});"
+                "if(!el){return null;}"
+                "el.scrollIntoView({block:'center',inline:'center'});"
+                "var r=el.getBoundingClientRect();"
+                "return {x:r.left+r.width/2,y:r.top+r.height/2};"
+                "})()"
+            )
+            point = self.evaluate(js)
+            if not point:
+                raise SelectorError(f"Selector {selector!r} not found")
+            x = float(point["x"])
+            y = float(point["y"])
+            self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+            self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
+            self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
 
     def input_text(self, selector: str, text: str, clear: bool = True, press_enter: bool = False):
         """Focus element, optionally clear, insert text, optionally press Enter."""
-        sel_j = json.dumps(selector)
-        js = (
-            "(function(){"
-            f"var el=document.querySelector({sel_j});"
-            "if(!el){throw new Error('selector not found: '+" + sel_j + ");}"
-            "el.focus();"
-        )
-        if clear:
-            js += (
-                "if('value' in el){el.value='';}"
-                "el.dispatchEvent(new Event('input',{bubbles:true}));"
-                "el.dispatchEvent(new Event('change',{bubbles:true}));"
+        with self.transaction():
+            sel_j = json.dumps(selector)
+            js = (
+                "(function(){"
+                f"var el=document.querySelector({sel_j});"
+                "if(!el){throw new Error('selector not found: '+" + sel_j + ");}"
+                "el.focus();"
             )
-        js += "return true;})()"
-        try:
-            self.evaluate(js)
-        except CDPCommandError as exc:
-            if "selector not found" in str(exc):
-                raise SelectorError(f"Selector {selector!r} not found") from exc
-            raise
-        if text:
-            self.call("Input.insertText", {"text": text})
-        if press_enter:
-            self.press("Enter")
+            if clear:
+                js += (
+                    "if('value' in el){el.value='';}"
+                    "el.dispatchEvent(new Event('input',{bubbles:true}));"
+                    "el.dispatchEvent(new Event('change',{bubbles:true}));"
+                )
+            js += "return true;})()"
+            try:
+                self.evaluate(js)
+            except CDPCommandError as exc:
+                if "selector not found" in str(exc):
+                    raise SelectorError(f"Selector {selector!r} not found") from exc
+                raise
+            if text:
+                self.call("Input.insertText", {"text": text})
+            if press_enter:
+                self.press("Enter")
 
     def press(self, key: str):
         info = _key_event_info(key)
@@ -673,13 +939,53 @@ class CDPConnection:
                 f.write(data)
         return data
 
-    def attach_to_target(self, target_id: str) -> str:
-        """Attach to a target with flattened sessions and return sessionId."""
+    def attach_session(self, target_id: str) -> "CDPSession":
+        """Attach to a target with flattened sessions and return a bound session."""
         result = self.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         session_id = result.get("sessionId")
         if not session_id:
-            raise CDPCommandError("Target.attachToTarget did not return a sessionId")
-        return session_id
+            raise CDPCommandError("Target.attachToTarget did not return a sessionId", method="Target.attachToTarget")
+        return CDPSession(self, session_id)
+
+    def attach_to_target(self, target_id: str) -> str:
+        """Deprecated compatibility helper returning only the flattened sessionId."""
+        return self.attach_session(target_id).session_id
+
+
+class CDPSession:
+    """Session-bound facade for flattened Target.attachToTarget sessions."""
+
+    def __init__(self, connection: CDPConnection, session_id: str):
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        self.connection = connection
+        self.session_id = session_id
+
+    def call(self, method: str, params: Optional[Dict] = None, timeout: Optional[float] = None) -> Dict:
+        return self.connection.call(method, params, timeout=timeout, session_id=self.session_id)
+
+    def wait_for_event(
+        self,
+        event_name: Any,
+        predicate: Optional[Callable[[Dict], bool]] = None,
+        timeout: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict:
+        if "session_id" in kwargs:
+            raise TypeError(
+                "CDPSession.wait_for_event() is already bound to its session; "
+                "use the parent CDPConnection for cross-session waits"
+            )
+        return self.connection.wait_for_event(
+            event_name,
+            predicate,
+            timeout,
+            session_id=self.session_id,
+            **kwargs,
+        )
+
+    def detach(self) -> None:
+        self.connection.call("Target.detachFromTarget", {"sessionId": self.session_id})
 
 
 # ---------------------------------------------------------------------------
@@ -687,13 +993,15 @@ class CDPConnection:
 # ---------------------------------------------------------------------------
 
 class ChromeCDPAdapter:
-    """High-level orchestrator wrapper for CDP connections."""
+    """High-level orchestrator wrapper for owned CDP connections."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 9222, timeout: float = 10.0):
         self._host = host
         self._port = port
         self._timeout = timeout
         self._conn: Optional[CDPConnection] = None
+        self._connections: set = set()
+        self._launch: Optional[LaunchedChrome] = None
         self._process: Any = None
 
     def __enter__(self) -> "ChromeCDPAdapter":
@@ -703,11 +1011,22 @@ class ChromeCDPAdapter:
         self.close()
         return False
 
-    def connect(self, ws_url: Optional[str] = None) -> CDPConnection:
+    def connect(self, ws_url: Optional[str] = None, *, replace: bool = True) -> CDPConnection:
         if ws_url is None:
             ws_url = discover_ws_url(self._host, self._port, timeout=self._timeout)
-        self._conn = CDPConnection(ws_url, timeout=self._timeout)
-        return self._conn
+        new_connection = CDPConnection(ws_url, timeout=self._timeout)
+        previous = self._conn
+        self._connections.add(new_connection)
+        self._conn = new_connection
+        if replace and previous is not None:
+            previous.close()
+            self._connections.discard(previous)
+        return new_connection
+
+    def open_connection(self, ws_url: str) -> CDPConnection:
+        connection = CDPConnection(ws_url, timeout=self._timeout)
+        self._connections.add(connection)
+        return connection
 
     @classmethod
     def from_config(cls, path: Optional[str] = None) -> "ChromeCDPAdapter":
@@ -716,13 +1035,16 @@ class ChromeCDPAdapter:
         timeout = float(cfg["timeouts"].get("default", 10.0))
         browser = cls(host=chrome.get("host", "127.0.0.1"), port=int(chrome.get("port", 9222)), timeout=timeout)
         if chrome.get("mode") == "launch":
-            browser._process = launch_chrome(
+            launch = launch_chrome(
                 executable=chrome.get("executable"),
-                port=int(chrome.get("port", 9222)),
+                port=int(chrome.get("port", 0)),
                 headless=bool(chrome.get("headless", True)),
                 user_data_dir=chrome.get("user_data_dir"),
                 extra_args=chrome.get("extra_args") or [],
             )
+            browser._launch = launch
+            browser._process = launch.process
+            browser._port = launch.port
         if chrome.get("ws_url"):
             browser.connect(chrome["ws_url"])
         return browser
@@ -768,11 +1090,15 @@ class ChromeCDPAdapter:
         return target
 
     def close(self):
-        conn, self._conn = self._conn, None
+        for connection in list(self._connections):
+            connection.close()
+        self._connections.clear()
+        self._conn = None
+        launch, self._launch = self._launch, None
         proc, self._process = self._process, None
-        if conn:
-            conn.close()
-        if proc:
+        if launch is not None:
+            launch.terminate()
+        elif proc:
             terminate_chrome(proc)
 
     def __getattr__(self, name: str):
@@ -840,20 +1166,32 @@ def new_tab_from_port(
         return json.loads(resp.read())
 
 
+def _browser_ws_url_from_version(
+    host: str = "127.0.0.1",
+    port: int = 9222,
+    timeout: float = 5.0,
+) -> str:
+    url = f"http://{host}:{port}/json/version"
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        data = json.loads(resp.read())
+    ws_url = data.get("webSocketDebuggerUrl")
+    if not ws_url:
+        raise CDPConnectionError("/json/version did not include webSocketDebuggerUrl")
+    return ws_url
+
+
 def wait_until_ready(
     host: str = "127.0.0.1",
     port: int = 9222,
     timeout: float = 10.0,
 ) -> None:
     """Poll /json/version until Chrome is ready to accept connections."""
-    url = f"http://{host}:{port}/json/version"
     deadline = time.monotonic() + timeout
     last_exc: Optional[Exception] = None
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=1.0) as resp:
-                json.loads(resp.read())
-                return
+            _browser_ws_url_from_version(host, port, timeout=min(1.0, max(0.1, deadline - time.monotonic())))
+            return
         except Exception as exc:
             last_exc = exc
             time.sleep(0.1)
@@ -862,25 +1200,93 @@ def wait_until_ready(
     ) from last_exc
 
 
+def _read_file_tail(path: Optional[str], max_lines: int = 20) -> str:
+    if not path:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+        return "\n".join(lines[-max_lines:])
+    except OSError:
+        return ""
+
+
+def _wait_for_devtools_active_port(
+    process: subprocess.Popen,
+    user_data_dir: str,
+    deadline: float,
+    previous_marker_text: Optional[str] = None,
+) -> tuple:
+    marker = os.path.join(user_data_dir, "DevToolsActivePort")
+    last_error: Optional[Exception] = None
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise CDPConnectionError(
+                f"Chrome exited during startup with code {process.returncode}"
+            )
+        try:
+            with open(marker, "r", encoding="utf-8") as handle:
+                text = handle.read()
+            if previous_marker_text is not None and text == previous_marker_text:
+                raise ValueError("DevToolsActivePort has not changed for this launch")
+            lines = text.splitlines()
+            if len(lines) < 2:
+                raise ValueError("DevToolsActivePort is incomplete")
+            port = int(lines[0])
+            browser_path = lines[1].strip()
+            if not 1 <= port <= 65535:
+                raise ValueError(f"Invalid DevTools port: {port}")
+            if not browser_path.startswith("/devtools/browser/"):
+                raise ValueError(f"Invalid browser WebSocket path: {browser_path!r}")
+            return port, f"ws://127.0.0.1:{port}{browser_path}"
+        except (OSError, ValueError) as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise CDPTimeoutError("Chrome did not create a valid DevToolsActivePort file") from last_error
+
+
+def _verify_browser_endpoint(port: int, browser_ws_url: str, timeout: float) -> None:
+    version_ws = _browser_ws_url_from_version("127.0.0.1", port, timeout=timeout)
+    expected_path = urllib.parse.urlparse(browser_ws_url).path
+    observed_path = urllib.parse.urlparse(version_ws).path
+    if observed_path != expected_path:
+        raise CDPConnectionError(
+            f"/json/version WebSocket path mismatch: expected {expected_path!r}, got {observed_path!r}"
+        )
+
+
 def terminate_chrome(proc: Any, timeout: float = 5.0) -> None:
-    """Terminate a Chrome process and remove its temp profile if one was created."""
+    """Terminate Chrome and remove BareCDP-owned temp profile/log artifacts."""
     if proc is None:
         return
-    temp_dir: Optional[str] = getattr(proc, "_bare_cdp_temp_dir", None)
+    if isinstance(proc, LaunchedChrome):
+        process = proc.process
+        temp_dir = proc.user_data_dir if proc.owns_user_data_dir else None
+        stderr_path = proc.stderr_path
+    else:
+        process = proc
+        temp_dir = getattr(proc, "_bare_cdp_temp_dir", None)
+        stderr_path = getattr(proc, "_bare_cdp_stderr_path", None)
     try:
-        proc.terminate()
-        try:
-            proc.wait(timeout=timeout)
-        except Exception:
+        if process.poll() is None:
+            process.terminate()
             try:
-                proc.kill()
-                proc.wait(timeout=2.0)
+                process.wait(timeout=timeout)
             except Exception:
-                pass
+                try:
+                    process.kill()
+                    process.wait(timeout=2.0)
+                except Exception:
+                    pass
     except Exception:
         pass
     if temp_dir:
         shutil.rmtree(temp_dir, ignore_errors=True)
+    if stderr_path:
+        try:
+            os.unlink(stderr_path)
+        except OSError:
+            pass
 
 
 def _env_first(*names: str) -> Optional[str]:
@@ -964,16 +1370,13 @@ def _chrome_executable_candidates() -> List[str]:
 
 def launch_chrome(
     executable: Optional[str] = None,
-    port: int = 9222,
+    port: int = 0,
     headless: bool = True,
     user_data_dir: Optional[str] = None,
     extra_args: Optional[List[str]] = None,
     ready_timeout: float = 10.0,
-) -> Any:
-    """Launch Chrome with remote debugging enabled. Returns subprocess.Popen."""
-    import subprocess
-    import tempfile
-
+) -> LaunchedChrome:
+    """Launch Chrome with remote debugging enabled and return endpoint metadata."""
     if executable is None:
         for c in _chrome_executable_candidates():
             try:
@@ -990,10 +1393,25 @@ def launch_chrome(
         if executable is None:
             raise FileNotFoundError("Chrome/Chromium executable not found")
 
-    temp_profile: Optional[str] = None
+    owns_profile = user_data_dir is None
     if user_data_dir is None:
-        temp_profile = tempfile.mkdtemp(prefix="chrome_cdp_")
-        user_data_dir = temp_profile
+        user_data_dir = tempfile.mkdtemp(prefix="chrome_cdp_")
+
+    previous_marker_text: Optional[str] = None
+    marker = os.path.join(user_data_dir, "DevToolsActivePort")
+    if not owns_profile:
+        try:
+            with open(marker, "r", encoding="utf-8") as handle:
+                previous_marker_text = handle.read()
+        except OSError:
+            previous_marker_text = None
+
+    stderr_file = tempfile.NamedTemporaryFile(
+        prefix="bare_cdp_chrome_",
+        suffix=".log",
+        delete=False,
+    )
+    stderr_path = stderr_file.name
 
     cmd = [
         executable,
@@ -1008,39 +1426,94 @@ def launch_chrome(
     if extra_args:
         cmd.extend(extra_args)
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_file)
+    except Exception:
+        stderr_file.close()
+        try:
+            os.remove(stderr_path)
+        except OSError:
+            pass
+        if owns_profile:
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+        raise
+    else:
+        stderr_file.close()
 
-    if temp_profile is not None:
-        proc._bare_cdp_temp_dir = temp_profile  # type: ignore[attr-defined]
+    # Backward-compatible cleanup hints for callers that still pass the raw Popen
+    if owns_profile:
+        proc._bare_cdp_temp_dir = user_data_dir  # type: ignore[attr-defined]
+    proc._bare_cdp_stderr_path = stderr_path  # type: ignore[attr-defined]
 
-    if ready_timeout:
-        deadline = time.monotonic() + ready_timeout
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                terminate_chrome(proc)
-                raise CDPConnectionError(
-                    f"Chrome process exited early (returncode={proc.returncode})"
-                )
-            try:
-                wait_until_ready(
-                    host="127.0.0.1",
-                    port=port,
-                    timeout=min(0.5, max(0.0, deadline - time.monotonic())),
-                )
-                return proc
-            except CDPTimeoutError:
-                pass
-        if proc.poll() is not None:
-            terminate_chrome(proc)
-            raise CDPConnectionError(
-                f"Chrome process exited early (returncode={proc.returncode})"
-            )
-        terminate_chrome(proc)
-        raise CDPTimeoutError(
-            f"Chrome did not become ready on port {port} within {ready_timeout}s"
+    if ready_timeout == 0:
+        return LaunchedChrome(
+            process=proc,
+            port=port,
+            browser_ws_url="",
+            user_data_dir=user_data_dir,
+            owns_user_data_dir=owns_profile,
+            stderr_path=stderr_path,
         )
 
-    return proc
+    try:
+        deadline = time.monotonic() + ready_timeout
+        if port == 0:
+            actual_port, browser_ws_url = _wait_for_devtools_active_port(
+                proc,
+                user_data_dir,
+                deadline,
+                previous_marker_text=previous_marker_text,
+            )
+        else:
+            last_exc: Optional[Exception] = None
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    raise CDPConnectionError(
+                        f"Chrome exited during startup with code {proc.returncode}"
+                    )
+                try:
+                    browser_ws_url = _browser_ws_url_from_version(
+                        "127.0.0.1",
+                        port,
+                        timeout=min(1.0, max(0.1, deadline - time.monotonic())),
+                    )
+                    actual_port = port
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    time.sleep(0.1)
+            else:
+                raise CDPTimeoutError(
+                    f"Chrome not ready at 127.0.0.1:{port} after {ready_timeout}s"
+                ) from last_exc
+        _verify_browser_endpoint(actual_port, browser_ws_url, timeout=max(0.1, deadline - time.monotonic()))
+        return LaunchedChrome(
+            process=proc,
+            port=actual_port,
+            browser_ws_url=browser_ws_url,
+            user_data_dir=user_data_dir,
+            owns_user_data_dir=owns_profile,
+            stderr_path=stderr_path,
+        )
+    except Exception as exc:
+        diag = _read_file_tail(stderr_path)
+        terminate_chrome(
+            LaunchedChrome(
+                process=proc,
+                port=port,
+                browser_ws_url="",
+                user_data_dir=user_data_dir,
+                owns_user_data_dir=owns_profile,
+                stderr_path=stderr_path,
+            )
+        )
+        if diag:
+            message = f"{exc}\nChrome stderr tail:\n{diag}"
+            if isinstance(exc, CDPTimeoutError):
+                raise CDPTimeoutError(message) from exc
+            if isinstance(exc, CDPConnectionError):
+                raise CDPConnectionError(message) from exc
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1084,7 +1557,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
 
     cfg = load_config(args.config)
     host = args.host or cfg["chrome"].get("host", "127.0.0.1")
-    port = args.port or int(cfg["chrome"].get("port", 9222))
+    port = args.port if args.port is not None else int(cfg["chrome"].get("port", 9222))
     timeout = float(cfg["timeouts"].get("default", 10.0))
     process = None
     if args.launch or cfg["chrome"].get("mode") == "launch":
@@ -1095,6 +1568,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
             user_data_dir=cfg["chrome"].get("user_data_dir"),
             extra_args=cfg["chrome"].get("extra_args") or [],
         )
+        port = process.port
 
     if args.new_tab:
         result = new_tab_from_port(args.new_tab, host=host, port=port, timeout=timeout)

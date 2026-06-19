@@ -43,7 +43,7 @@ BareCDP is designed for:
 - agentic systems or non-agent systems that need a minimal browser-control primitive;
 - debugging and protocol experiments where direct CDP access is useful.
 
-BareCDP's public API is synchronous. A single `CDPConnection` sends one command at a time; systems that need parallel browser work should open separate connections, use threads or processes, or let their orchestrator own concurrency.
+BareCDP's public API is synchronous. A single `CDPConnection` serializes socket access and supports one active command or event wait at a time; systems that need parallel browser work should open separate connections, use threads or processes, or let their orchestrator own concurrency.
 
 ## What it is — and what it is not
 
@@ -174,20 +174,21 @@ browser.close()
 ```python
 from bare_cdp import Browser, launch_chrome, terminate_chrome
 
-proc = launch_chrome(port=9222, headless=True)  # waits until CDP is ready
-browser = Browser(port=9222)
+launch = launch_chrome(headless=True)  # uses an ephemeral CDP port by default
+browser = Browser(port=launch.port)
 try:
     page = browser.connect()
     page.navigate("https://example.com")
     print(page.extract_text())
 finally:
-    browser.close()        # closes the CDP WebSocket connection
-    terminate_chrome(proc) # stops Chrome and removes BareCDP's temp profile, if any
+    browser.close()           # closes owned CDP WebSocket connections
+    terminate_chrome(launch)  # stops Chrome and removes BareCDP's temp profile, if any
 ```
 
 When `user_data_dir` is not supplied, `launch_chrome()` creates a temporary directory under
-the system temp path. Call `terminate_chrome(proc)` to stop Chrome and remove that temporary
-profile. User-supplied profile directories are preserved.
+the system temp path and reads Chrome's `DevToolsActivePort` file to bind to the spawned
+process instead of guessing a fixed port. Call `terminate_chrome(launch)` to stop Chrome and
+remove that temporary profile. User-supplied profile directories are preserved.
 
 ### Fill a form
 
@@ -329,7 +330,12 @@ from bare_cdp import (
     CDPProtocolError,
     CDPTimeoutError,
     CDPCommandError,
+    NavigationError,
     SelectorError,
+    CDPEvent,
+    CDPSession,
+    LaunchedChrome,
+    ANY_SESSION,
     discover_ws_url,
     list_targets_from_port,
     new_tab_from_port,
@@ -341,13 +347,13 @@ from bare_cdp import (
 
 - `Browser(host="127.0.0.1", port=9222, timeout=10.0)`
 - `Browser.from_config(path)`
-- `browser.connect(ws_url=None)`
+- `browser.connect(ws_url=None, replace=True)`
 - `browser.page()`
 - `browser.list_targets()`
 - `browser.select_target(...)`
 - `browser.new_tab(url="about:blank", connect=True)`
 - `browser.close()`
-- `launch_chrome(..., ready_timeout=10.0)`
+- `launch_chrome(..., ready_timeout=10.0) -> LaunchedChrome`
 - `wait_until_ready(host="127.0.0.1", port=9222, timeout=10.0)`
 - `terminate_chrome(proc, timeout=5.0)`
 
@@ -356,9 +362,11 @@ from bare_cdp import (
 `Browser.connect()` returns a `CDPConnection` object:
 
 - `call(method, params=None, timeout=None, session_id=None)`
-- `wait_for_event(event_name, predicate=None, timeout=None)`
-- `attach_to_target(target_id)`
-- `navigate(url, wait=True, timeout=None)`
+- `wait_for_event(event_name, predicate=None, timeout=None, session_id=None, after_sequence=None)`
+- `event_cursor()` / `recent_events()` / `dropped_event_count`
+- `attach_session(target_id)`
+- `attach_to_target(target_id)` *(compatibility helper returning the session ID string)*
+- `navigate(url, wait=True, timeout=None, wait_until="load")`
 - `wait_for_ready_state(states=("interactive", "complete"), timeout=None)`
 - `evaluate(expression, return_by_value=True, timeout=None)`
 - `wait_for_selector(selector, timeout=None)`
@@ -428,10 +436,10 @@ overrides, and process cleanup. Run the commands above before submitting changes
 
 BareCDP intentionally keeps the core small:
 
-- one JSON-RPC command at a time per connection;
+- one JSON-RPC command or event wait at a time per connection, enforced with a connection-level lock;
 - synchronous API only; BareCDP does not provide an async client today;
 - direct CDP primitives instead of a large abstraction layer;
-- `navigate()` checks `Page.navigate` errors and waits for the matching frame load or same-document navigation event (`wait=True`);
+- `navigate()` checks `Page.navigate` errors and waits for loader-correlated lifecycle events or same-document navigation events (`wait=True`);
 - JavaScript snippets use `json.dumps(...)` for safe selector/text interpolation;
 - common browser interactions are thin wrappers over CDP.
 

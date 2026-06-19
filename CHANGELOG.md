@@ -5,6 +5,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-19
+
+### Added
+- `CDPEvent` typed event objects, event cursors, `recent_events()`, and visible
+  `dropped_event_count` for bounded queue overflow diagnostics.
+- `ANY_SESSION` sentinel and session-aware `wait_for_event(..., session_id=..., after_sequence=...)`.
+- `CDPSession` plus `attach_session(target_id)` for flattened CDP target sessions.
+- `LaunchedChrome` return object from `launch_chrome()`, carrying process, actual port,
+  browser WebSocket URL, profile path, and cleanup ownership.
+- `ChromeCDPAdapter.open_connection()` for explicit multi-connection use.
+
+### Changed
+- The synchronous contract is now enforced with a connection-level `RLock`; one command or
+  event wait owns the WebSocket at a time, and high-level actions run as atomic transactions.
+- `call()` now treats wrong response IDs and response `sessionId` mismatches as protocol
+  errors instead of retaining unmatched responses as events.
+- `navigate()` now enables lifecycle events and correlates cross-document completion using
+  `Page.lifecycleEvent` `frameId` + `loaderId`; same-document navigation uses
+  `Page.navigatedWithinDocument` after the pre-navigation event cursor.
+- `launch_chrome()` defaults to `port=0`, reads `DevToolsActivePort`, verifies `/json/version`,
+  and binds to the spawned profile/process instead of assuming a fixed port.
+- `ChromeCDPAdapter` now tracks and closes every connection it opens; replacement connects
+  the new target before closing the previous connection.
+
+### Fixed
+- Prevented stale navigation events and unrelated session events from satisfying later waits.
+- Prevented fixed-port discovery from accidentally attaching to an older Chrome instance when
+  the caller lets Chrome choose an ephemeral debugging port.
+- Startup failures preserve recent Chrome stderr diagnostics in raised errors.
+
 ## [0.1.2] — 2026-06-19
 
 ### Fixed

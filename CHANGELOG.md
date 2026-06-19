@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Single-file provenance metadata (`__author__`, `__license__`, `__url__`) for vendored copies.
+
+### Documented
+- Added README vendoring guidance with source, issue tracker, and license links.
+
 ## [0.2.0] — 2026-06-19
 
 ### Added

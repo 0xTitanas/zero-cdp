@@ -124,6 +124,16 @@ from bare_cdp import Browser
 
 After installation, the `bare-cdp` console script is available alongside `python -m bare_cdp`.
 
+### Vendoring note
+
+BareCDP is intentionally copyable as a single file. If you vendor `bare_cdp.py`
+into another project, preserve the module metadata/header so downstream users can
+find the canonical source, license, and issue tracker:
+
+- Source: https://github.com/0xTitanas/bare-cdp
+- Issues: https://github.com/0xTitanas/bare-cdp/issues
+- License: MIT
+
 ## Requirements
 
 - Python 3.9+

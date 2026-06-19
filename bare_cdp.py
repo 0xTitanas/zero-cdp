@@ -70,6 +70,9 @@ import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
 __version__ = "0.2.0"
+__author__ = "BareCDP contributors"
+__license__ = "MIT"
+__url__ = "https://github.com/0xTitanas/bare-cdp"
 
 
 _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"

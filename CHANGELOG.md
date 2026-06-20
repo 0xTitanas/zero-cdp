@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-06-19
+
+### Added
+- GitHub issue forms and a pull request template now capture small reproducible bug reports,
+  boundary-fit feature requests, verification evidence, and stdlib-only/single-file checks.
+- Opt-in live Chrome unittest coverage exercises real launch/connect, navigation, selectors,
+  input, click, keypress, screenshot, target, event, and cleanup paths.
+- A narrow live-Chrome GitHub Actions smoke runs the opt-in live tests and the documented
+  `data:` URL CLI launch path on Linux.
+
+### Documented
+- README release, CI coverage, development, and roadmap wording now reflects the automated
+  live-Chrome smoke without overstating broader live-browser coverage.
+- README production-surface and consistency wording from post-0.2.2 documentation work is
+  included in this release.
+
+### Unchanged
+- Runtime behavior in `bare_cdp.py` is unchanged from 0.2.2 except for the version string;
+  this is a documentation, community-hygiene, and test-infrastructure release.
+
 ## [0.2.2] — 2026-06-19
 
 ### Changed

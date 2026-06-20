@@ -9,7 +9,7 @@
   <a href="https://github.com/0xTitanas/bare-cdp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/0xTitanas/bare-cdp/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python 3.9 to 3.13" src="https://img.shields.io/badge/python-3.9--3.13-blue">
   <img alt="Runtime dependencies: zero" src="https://img.shields.io/badge/runtime%20deps-zero-brightgreen">
-  <img alt="Current release: v0.2.2" src="https://img.shields.io/badge/release-v0.2.2-informational">
+  <img alt="Current release: v0.2.3" src="https://img.shields.io/badge/release-v0.2.3-informational">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
@@ -39,7 +39,7 @@ BareCDP is built for:
 
 | Area | Current state |
 | --- | --- |
-| Project stage | Alpha-quality small library; current release `v0.2.2` |
+| Project stage | Alpha-quality small library; current release `v0.2.3` |
 | Runtime | Python 3.9+; CI runs 3.9, 3.10, 3.11, 3.12, 3.13 |
 | Runtime dependencies | None; imports only Python standard-library modules |
 | Browser target | Chrome/Chromium-compatible CDP endpoint |
@@ -47,7 +47,7 @@ BareCDP is built for:
 | Default launch posture | `launch_chrome()` uses Chrome-selected ephemeral CDP ports and disposable profiles by default |
 | Network behavior | Talks to the configured Chrome DevTools endpoint; no model/API/service calls |
 | Credential behavior | Does not request or store credentials; callers must avoid dumping authenticated page data |
-| CI coverage | Unit/protocol/config/CLI/import/package checks with a fake CDP server; no automated live-Chrome CI yet |
+| CI coverage | Unit/protocol/config/CLI/import/package checks with a fake CDP server, plus a narrow automated live-Chrome smoke on Linux |
 | Security posture | Local debugging endpoint guidance in [docs/security.md](docs/security.md); not a sandbox |
 | Claims deliberately withheld | No Playwright-level actionability, no cross-browser abstraction, no async client, no stealth claims |
 
@@ -322,7 +322,7 @@ See [docs/limitations.md](docs/limitations.md) for details.
 Run the local verification set:
 
 ```sh
-python -m py_compile bare_cdp.py tests/test_bare_cdp.py examples/*.py
+python -m py_compile bare_cdp.py tests/test_bare_cdp.py tests/test_live_chrome.py examples/*.py
 python -m unittest discover -s tests -v
 python -m bare_cdp --help
 python -S -c "import sys; sys.path.insert(0, '.'); import bare_cdp; print(bare_cdp.__version__)"
@@ -332,7 +332,7 @@ The tests use only the Python standard library. They include a fake WebSocket/CD
 
 The `examples/` directory contains small scripts for navigation/extraction, raw CDP calls, config-driven runs, form filling, and launch/screenshot flows; the development command above compiles those examples as part of the local smoke set.
 
-Current CI runs the unit/protocol/import/package checks on Ubuntu across Python 3.9–3.13. Live-Chrome smoke testing is currently manual release verification, not an automated CI job.
+Current CI runs the unit/protocol/import/package checks on Ubuntu across Python 3.9–3.13. A narrow live-Chrome smoke now runs on Linux; broader live-browser coverage remains manual release verification.
 
 ## Documentation map
 
@@ -347,8 +347,8 @@ Current CI runs the unit/protocol/import/package checks on Ubuntu across Python 
 
 Near-term items that fit the project boundary:
 
-- automated live-Chrome CI smoke job;
 - Windows launch smoke coverage;
+- broader live-browser smoke coverage beyond the current narrow Linux job;
 - stricter but still lightweight interaction checks for controlled pages;
 - optional generated CDP method helpers;
 - packaged single-file release artifact.

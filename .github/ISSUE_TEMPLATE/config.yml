@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and usage discussion
+    url: https://github.com/0xTitanas/bare-cdp/discussions
+    about: Ask usage questions or discuss whether a request fits BareCDP's boundary.
+  - name: Documentation map
+    url: https://github.com/0xTitanas/bare-cdp#documentation-map
+    about: Configuration, security, and limitations references before filing an issue.

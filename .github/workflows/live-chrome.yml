@@ -1,0 +1,45 @@
+name: Live Chrome smoke
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  live-chrome:
+    name: Live Chrome smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Show Chrome version
+        run: |
+          google-chrome --version || chromium --version || chromium-browser --version
+
+      - name: Syntax check
+        run: python -m py_compile bare_cdp.py tests/test_live_chrome.py
+
+      - name: Live Chrome unittest smoke
+        env:
+          BARE_CDP_LIVE_CHROME: "1"
+        run: python -W error::ResourceWarning -m unittest tests.test_live_chrome -v
+
+      - name: Documented CLI launch smoke
+        run: |
+          set -euo pipefail
+          url='data:text/html,%3Ctitle%3EBareCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20BareCDP%3C%2Fmain%3E'
+          output="$(python -m bare_cdp --launch --new-tab about:blank --navigate "$url" --extract-text)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep 'Hello from BareCDP'

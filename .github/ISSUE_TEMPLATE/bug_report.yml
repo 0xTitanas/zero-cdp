@@ -1,0 +1,102 @@
+name: Bug report
+description: Report incorrect or unexpected BareCDP behavior.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report. BareCDP is an alpha-quality,
+        stdlib-only, single-file Chrome DevTools Protocol client, so please keep
+        examples small and self-contained.
+
+        Before pasting any logs or page output, remove cookies, tokens, local
+        storage, and authenticated page content — see
+        [docs/security.md](https://github.com/0xTitanas/bare-cdp/blob/main/docs/security.md).
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: A clear description of the bug and how it differs from what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: |
+        A minimal Python script or CLI invocation that reproduces the issue.
+        Prefer `data:` URLs or a tiny local page over real sites.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected BareCDP to do instead.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Traceback or output
+      description: Any traceback or relevant output. Scrub secrets first.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: bare-cdp-version
+    attributes:
+      label: BareCDP version
+      description: Output of `python -c "import bare_cdp; print(bare_cdp.__version__)"` or the vendored module header.
+      placeholder: "0.2.3"
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+      placeholder: "3.11.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: chrome-version
+    attributes:
+      label: Chrome / Chromium version
+      description: Output of `chrome --version` (or the Chromium-compatible binary you target).
+      placeholder: "Google Chrome 1XX.x.x.x"
+    validations:
+      required: false
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How was Chrome started
+      options:
+        - "launch mode (launch_chrome / --launch)"
+        - "connect mode (existing debug port)"
+        - Not sure
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am using an unmodified `bare_cdp.py` (no third-party runtime patches).
+          required: true
+        - label: I removed cookies, tokens, and authenticated page content from anything pasted above.
+          required: true

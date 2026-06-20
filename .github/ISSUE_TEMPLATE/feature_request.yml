@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a capability that fits the BareCDP boundary.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        BareCDP is intentionally small: one file, zero runtime dependencies, and a
+        synchronous Chrome DevTools Protocol surface. Requests that fit that boundary
+        are most likely to land. See the non-goals in
+        [docs/limitations.md](https://github.com/0xTitanas/bare-cdp/blob/main/docs/limitations.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and where does the current API fall short?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed surface
+      description: A sketch of the method, flag, or behavior you have in mind.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Raw `call(...)` usage, separate helpers, or other libraries you evaluated.
+    validations:
+      required: false
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Boundary fit
+      description: BareCDP keeps these invariants. Check the ones your request preserves.
+      options:
+        - label: Implementable using only the Python standard library (no new runtime dependency).
+          required: true
+        - label: Keeps the project single-file (`bare_cdp.py`).
+          required: true
+        - label: I understand this is not a request for Playwright/Selenium-level features, stealth, or an async framework.
+          required: true

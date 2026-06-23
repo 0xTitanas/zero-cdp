@@ -25,7 +25,7 @@ It is intentionally not Playwright, Selenium, or a browser farm. It is a vendora
 
 ## Why this exists
 
-Sometimes you do not need a full browser automation framework. You need a small browser primitive that can be dropped into another system and audited in one sitting.
+Sometimes you don’t need a full browser automation framework. You need a small browser primitive that can be dropped into another system and audited in one sitting.
 
 BareCDP is built for:
 

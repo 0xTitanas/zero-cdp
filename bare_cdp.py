@@ -1603,12 +1603,22 @@ def terminate_chrome(proc: Any, timeout: float = 5.0) -> None:
     except Exception:
         pass
     if temp_dir:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        _rmtree_with_retries(temp_dir)
     if stderr_path:
         try:
             os.unlink(stderr_path)
         except OSError:
             pass
+
+
+def _rmtree_with_retries(path: str, attempts: int = 5, delay: float = 0.05) -> None:
+    """Remove a directory tree, retrying brief teardown races from Chrome child processes."""
+    for attempt in range(max(1, attempts)):
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return
+        if attempt < attempts - 1:
+            time.sleep(delay)
 
 
 def _env_first(*names: str) -> Optional[str]:
@@ -1820,7 +1830,7 @@ def launch_chrome(
             )
         else:
             if owns_profile:
-                shutil.rmtree(user_data_dir, ignore_errors=True)
+                _rmtree_with_retries(user_data_dir)
             if stderr_path:
                 with contextlib.suppress(OSError):
                     os.unlink(stderr_path)

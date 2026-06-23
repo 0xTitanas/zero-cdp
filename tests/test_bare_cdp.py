@@ -1124,6 +1124,37 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
                     adapter.launch_chrome(executable="/bin/echo", extra_args=[arg])
                 popen.assert_not_called()
 
+    def test_terminate_chrome_retries_temp_profile_cleanup(self):
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, ignore_errors=True)
+        profile = os.path.join(parent, "profile")
+        os.mkdir(profile)
+        process = mock.Mock()
+        process.poll.return_value = 0
+        launch = adapter.LaunchedChrome(
+            process=process,
+            port=9222,
+            browser_ws_url="ws://127.0.0.1:9222/devtools/browser/test",
+            user_data_dir=profile,
+            owns_user_data_dir=True,
+        )
+        real_rmtree = shutil.rmtree
+        calls = []
+
+        def flaky_rmtree(path, ignore_errors=False):
+            calls.append(path)
+            if len(calls) == 1:
+                return
+            return real_rmtree(path, ignore_errors=ignore_errors)
+
+        with mock.patch.object(adapter.shutil, "rmtree", side_effect=flaky_rmtree), \
+             mock.patch.object(adapter.time, "sleep") as sleep:
+            adapter.terminate_chrome(launch)
+
+        self.assertFalse(os.path.exists(profile))
+        self.assertEqual(calls, [profile, profile])
+        sleep.assert_called_once_with(0.05)
+
     def test_launch_chrome_nonzero_port_must_be_available_before_spawn(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))

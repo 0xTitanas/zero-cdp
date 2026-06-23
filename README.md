@@ -48,7 +48,7 @@ BareCDP is built for:
 | Network behavior | Talks to the configured Chrome DevTools endpoint; no model/API/service calls |
 | Credential behavior | Does not request or store credentials; callers must avoid dumping authenticated page data |
 | CI coverage | Unit/protocol/config/CLI/import/package checks with a fake CDP server, plus a narrow automated live-Chrome smoke on Linux |
-| Security posture | Local debugging endpoint guidance in [docs/security.md](docs/security.md); not a sandbox |
+| Security posture | Repository policy in [SECURITY.md](SECURITY.md), with local debugging endpoint guidance in [docs/security.md](docs/security.md); not a sandbox |
 | Claims deliberately withheld | No Playwright-level actionability, no cross-browser abstraction, no async client, no stealth claims |
 
 ## Quickstart
@@ -61,7 +61,8 @@ from bare_cdp import Browser, launch_chrome, terminate_chrome
 launch = launch_chrome(headless=True)  # ephemeral CDP port + temp profile by default
 browser = Browser(port=launch.port)
 try:
-    browser.navigate("https://example.com")
+    url = "data:text/html,%3Ctitle%3EBareCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20BareCDP%3C%2Fmain%3E"
+    browser.navigate(url)
     print(browser.evaluate("document.title"))
     print(browser.extract_text())
 finally:
@@ -298,7 +299,7 @@ Recommended defaults:
 - Do not log cookies, tokens, local storage, or raw authenticated page dumps.
 - Do not automate password or 2FA entry through generic scripts.
 
-See [docs/security.md](docs/security.md) for the full security reference.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and [docs/security.md](docs/security.md) for the full local-debugging safety reference.
 
 ## Limits and non-goals
 
@@ -337,6 +338,7 @@ Current CI runs the unit/protocol/import/package checks on Ubuntu across Python 
 ## Documentation map
 
 - [docs/configuration.md](docs/configuration.md) — config file, environment variables, launch/connect defaults
+- [SECURITY.md](SECURITY.md) — vulnerability reporting and supported security posture
 - [docs/security.md](docs/security.md) — remote debugging and profile safety
 - [docs/limitations.md](docs/limitations.md) — current limits and non-goals
 - [CHANGELOG.md](CHANGELOG.md) — release history

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/bare-cdp-header.png" alt="A black mechanical serpent coiled around a translucent browser window, with blue and amber code traces across a dark technical interface" width="100%">
+  <img src="docs/assets/bare-cdp-header.png" alt="BareCDP header: a black mechanical serpent coiled around a translucent browser window, with overlay text reading barecdp, Pure Python CDP · Zero runtime deps" width="100%">
 </p>
 
 ---

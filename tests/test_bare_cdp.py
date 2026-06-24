@@ -1573,6 +1573,13 @@ class TestWaitAndSelectorHardening(unittest.TestCase):
             adapter.CDPConnection.wait_for_selector(conn, "[")
         self.assertEqual(conn.evaluate.call_count, 1)
 
+    def test_wait_for_selector_accepts_structured_found_response(self):
+        conn = object.__new__(adapter.CDPConnection)
+        conn._timeout = 1.0
+        conn.evaluate = mock.Mock(return_value={"valid": True, "found": True})
+        self.assertTrue(adapter.CDPConnection.wait_for_selector(conn, "#ready"))
+        conn.evaluate.assert_called_once()
+
     def test_events_property_returns_immutable_snapshot(self):
         conn = object.__new__(adapter.CDPConnection)
         conn._io_lock = threading.RLock()
@@ -1662,6 +1669,13 @@ class TestBrowserPassThroughMethods(unittest.TestCase):
             connect.assert_called_once_with()
         fake.navigate.assert_called_once_with("https://example.com", wait=True, timeout=None, wait_until="load")
         fake.extract_text.assert_called_once_with(selector=None)
+
+    def test_unknown_browser_attribute_does_not_lazy_connect(self):
+        browser = adapter.ChromeCDPAdapter(timeout=1.0)
+        with mock.patch.object(browser, "connect") as connect:
+            with self.assertRaises(AttributeError):
+                getattr(browser, "not_a_browser_api")
+        connect.assert_not_called()
 
     def test_browser_pass_through_methods_delegate_to_current_connection(self):
         browser = adapter.ChromeCDPAdapter(timeout=1.0)

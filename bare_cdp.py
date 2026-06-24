@@ -613,8 +613,7 @@ class CDPConnection:
             return self._dropped_event_count
 
     def recent_events(self) -> tuple:
-        with self._io_lock:
-            return tuple(self._events)
+        return self.events
 
     def event_cursor(self) -> int:
         with self._io_lock:
@@ -1051,8 +1050,6 @@ class CDPConnection:
                         raise SelectorError(f"Invalid selector {selector!r}: {detail}")
                     if value.get("found"):
                         return True
-                elif value:
-                    return True
             except CDPCommandError as exc:
                 if not _is_transient_evaluation_error(exc):
                     raise
@@ -1206,7 +1203,6 @@ class ChromeCDPAdapter:
         self._conn: Optional[CDPConnection] = None
         self._connections: set = set()
         self._launch: Optional[LaunchedChrome] = None
-        self._process: Any = None
 
     def __enter__(self) -> "ChromeCDPAdapter":
         return self
@@ -1253,7 +1249,6 @@ class ChromeCDPAdapter:
                     extra_args=chrome.get("extra_args") or [],
                 )
                 browser._launch = launch
-                browser._process = launch.process
                 browser._host = "127.0.0.1"
                 browser._port = launch.port
             elif chrome.get("ws_url"):
@@ -1407,17 +1402,8 @@ class ChromeCDPAdapter:
         self._connections.clear()
         self._conn = None
         launch, self._launch = self._launch, None
-        proc, self._process = self._process, None
         if launch is not None:
             launch.terminate()
-        elif proc:
-            terminate_chrome(proc)
-
-    def __getattr__(self, name: str):
-        """Delegate high-level actions to the active CDPConnection."""
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return getattr(self.connection, name)
 
 
 Browser = ChromeCDPAdapter
@@ -1522,13 +1508,13 @@ def wait_until_ready(
     ) from last_exc
 
 
-def _read_file_tail(path: Optional[str], max_lines: int = 20) -> str:
+def _read_file_tail(path: Optional[str]) -> str:
     if not path:
         return ""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             lines = handle.read().splitlines()
-        return "\n".join(lines[-max_lines:])
+        return "\n".join(lines[-20:])
     except OSError:
         return ""
 
@@ -1611,14 +1597,15 @@ def terminate_chrome(proc: Any, timeout: float = 5.0) -> None:
             pass
 
 
-def _rmtree_with_retries(path: str, attempts: int = 5, delay: float = 0.05) -> None:
+def _rmtree_with_retries(path: str) -> None:
     """Remove a directory tree, retrying brief teardown races from Chrome child processes."""
-    for attempt in range(max(1, attempts)):
+    attempts = 5
+    for attempt in range(attempts):
         shutil.rmtree(path, ignore_errors=True)
         if not os.path.exists(path):
             return
         if attempt < attempts - 1:
-            time.sleep(delay)
+            time.sleep(0.05)
 
 
 def _env_first(*names: str) -> Optional[str]:

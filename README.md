@@ -13,6 +13,10 @@
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
+<p align="center">
+  <img src="docs/assets/bare-cdp-header.png" alt="A black mechanical serpent coiled around a translucent browser window, with blue and amber code traces across a dark technical interface" width="100%">
+</p>
+
 ---
 
 **BareCDP** is a compact Python browser-control layer for cases where installing a full automation framework is the wrong trade. It speaks directly to the **Chrome DevTools Protocol** through a minimal Chrome-oriented WebSocket path implemented with the Python standard library.

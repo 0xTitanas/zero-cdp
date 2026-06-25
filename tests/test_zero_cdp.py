@@ -25,7 +25,7 @@ import time
 import unittest
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 from unittest import mock
 
 import pathlib
@@ -34,7 +34,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import zero_cdp as adapter
+import zero_cdp as adapter  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +267,6 @@ class FakeDiscoveryServer:
     def _make_handler(self):
         targets = self._targets
         version_ws_url = self._version_ws_url
-        port = [None]  # late-bind
-
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 if self.path == "/json/version":
@@ -1710,7 +1708,9 @@ class TestBrowserPassThroughMethods(unittest.TestCase):
             session_id="S",
         )
 
-        predicate = lambda params: True
+        def predicate(params):
+            return True
+
         self.assertEqual(
             browser.wait_for_event(
                 "Runtime.consoleAPICalled",

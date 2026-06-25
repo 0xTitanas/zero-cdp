@@ -30,7 +30,7 @@ import urllib.parse
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import zero_cdp
+import zero_cdp  # noqa: E402
 
 
 LIVE = os.environ.get("ZERO_CDP_LIVE_CHROME") == "1"

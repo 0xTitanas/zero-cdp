@@ -46,7 +46,7 @@ chrome --remote-debugging-port=9222 \
 ```bash
 chrome \
   --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/bare-cdp-profile \
+  --user-data-dir=/tmp/zero-cdp-profile \
   --no-first-run \
   --no-default-browser-check \
   --disable-extensions
@@ -57,7 +57,7 @@ For headless CI:
 ```bash
 chrome \
   --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/bare-cdp-profile \
+  --user-data-dir=/tmp/zero-cdp-profile \
   --headless=new \
   --no-first-run \
   --no-default-browser-check \

@@ -24,7 +24,7 @@
 It is intentionally not Playwright, Selenium, or a browser farm. It is a vendorable actuator: connect to Chrome, run CDP commands, navigate, evaluate JavaScript, extract text/HTML, fill simple forms, press keys, and take screenshots from a synchronous script.
 
 <p align="center">
-  <img src="docs/assets/zero-cdp-flow.svg" alt="ZeroCDP control flow: caller to bare_cdp.py to local CDP endpoint to Chrome target">
+  <img src="docs/assets/zero-cdp-flow.svg" alt="ZeroCDP control flow: caller to zero_cdp.py to local CDP endpoint to Chrome target">
 </p>
 
 ## Why this exists
@@ -60,7 +60,7 @@ ZeroCDP is built for:
 ### Option A: let ZeroCDP launch Chrome
 
 ```python
-from bare_cdp import Browser, launch_chrome, terminate_chrome
+from zero_cdp import Browser, launch_chrome, terminate_chrome
 
 launch = launch_chrome(headless=True)  # ephemeral CDP port + temp profile by default
 browser = Browser(port=launch.port)
@@ -77,7 +77,7 @@ finally:
 Equivalent CLI smoke path:
 
 ```sh
-python -m bare_cdp --launch --new-tab about:blank --navigate "data:text/html,%3Ctitle%3EZeroCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20ZeroCDP%3C%2Fmain%3E" --extract-text
+python -m zero_cdp --launch --new-tab about:blank --navigate "data:text/html,%3Ctitle%3EZeroCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20ZeroCDP%3C%2Fmain%3E" --extract-text
 ```
 
 Expected text includes:
@@ -94,7 +94,7 @@ Start Chrome yourself with a dedicated automation profile and the hardened local
 ```text
 chrome \
   --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/bare-cdp-profile \
+  --user-data-dir=/tmp/zero-cdp-profile \
   --no-first-run \
   --no-default-browser-check \
   --disable-extensions
@@ -103,7 +103,7 @@ chrome \
 Then connect:
 
 ```python
-from bare_cdp import Browser
+from zero_cdp import Browser
 
 browser = Browser(host="127.0.0.1", port=9222)
 browser.navigate("https://example.com")
@@ -117,10 +117,10 @@ browser.close()
 
 ### Copy one file
 
-Copy `bare_cdp.py` into your project and import it:
+Copy `zero_cdp.py` into your project and import it:
 
 ```python
-from bare_cdp import Browser
+from zero_cdp import Browser
 ```
 
 If you vendor the file, preserve the module header metadata so downstream users can find the canonical source, license, and issue tracker.
@@ -133,7 +133,7 @@ cd zero-cdp
 python -m pip install .
 ```
 
-After installation, the `bare-cdp` console script is available alongside `python -m bare_cdp`.
+After installation, the `zero-cdp` console script is available alongside `python -m zero_cdp`.
 
 Project links:
 
@@ -157,14 +157,14 @@ Project links:
 | Screenshots | `screenshot(path=None, format="png")` |
 | Raw CDP | `call(method, params=None, timeout=None, session_id=None)` |
 | Sessions/events | `CDPSession`, `ANY_SESSION`, `wait_for_event(...)`, `recent_events(...)` |
-| CLI | `python -m bare_cdp` and `bare-cdp` console script |
+| CLI | `python -m zero_cdp` and `zero-cdp` console script |
 | Config | JSON config plus environment variable overrides |
 
 ## Architecture
 
 Text fallback for the diagram above:
 
-1. A Python script, shell command, or orchestrator calls `bare_cdp.py`.
+1. A Python script, shell command, or orchestrator calls `zero_cdp.py`.
 2. `Browser` manages endpoint discovery, optional Chrome launch, target selection, and owned connections.
 3. `CDPConnection` serializes WebSocket access and sends JSON-RPC CDP commands.
 4. Chrome executes the command against a page target.
@@ -178,7 +178,7 @@ Create a default config:
 
 ```sh
 RUN_DIR="$(mktemp -d)"
-python -m bare_cdp --write-default-config "$RUN_DIR/bare-cdp.json"
+python -m zero_cdp --write-default-config "$RUN_DIR/zero-cdp.json"
 ```
 
 Example config:
@@ -209,34 +209,34 @@ Environment overrides:
 
 | Variable | Meaning |
 | --- | --- |
-| `BARE_CDP_HOST` | Debugging host |
-| `BARE_CDP_PORT` | Debugging port |
-| `BARE_CDP_WS_URL` | Direct WebSocket debugger URL |
-| `BARE_CDP_CHROME` | Chrome/Chromium executable path |
-| `BARE_CDP_USER_DATA_DIR` | Chrome user-data directory |
-| `BARE_CDP_HEADLESS` | `true` / `false` / `1` / `0` |
-| `BARE_CDP_TIMEOUT` | Default timeout in seconds |
+| `ZERO_CDP_HOST` | Debugging host |
+| `ZERO_CDP_PORT` | Debugging port |
+| `ZERO_CDP_WS_URL` | Direct WebSocket debugger URL |
+| `ZERO_CDP_CHROME` | Chrome/Chromium executable path |
+| `ZERO_CDP_USER_DATA_DIR` | Chrome user-data directory |
+| `ZERO_CDP_HEADLESS` | `true` / `false` / `1` / `0` |
+| `ZERO_CDP_TIMEOUT` | Default timeout in seconds |
 
 See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ## CLI
 
 ```sh
-python -m bare_cdp --help
-bare-cdp --help
+python -m zero_cdp --help
+zero-cdp --help
 ```
 
 Common examples:
 
 ```text
 # Extract rendered text from a launched disposable Chrome
-python -m bare_cdp --launch --navigate https://example.com --extract-text
+python -m zero_cdp --launch --navigate https://example.com --extract-text
 
 # Open a new tab, connect to that target, then run follow-on actions
-python -m bare_cdp --new-tab https://example.com --eval "document.title"
+python -m zero_cdp --new-tab https://example.com --eval "document.title"
 
 # Screenshot
-python -m bare_cdp --launch --navigate https://example.com --screenshot example.png
+python -m zero_cdp --launch --navigate https://example.com --screenshot example.png
 ```
 
 `--launch --new-tab` must be paired with a follow-on action such as `--eval`, `--navigate`, `--extract-text`, or `--screenshot`; otherwise the CLI refuses the command before launching Chrome.
@@ -244,7 +244,7 @@ python -m bare_cdp --launch --navigate https://example.com --screenshot example.
 ## API overview
 
 ```python
-from bare_cdp import (
+from zero_cdp import (
     Browser,
     CDPConnection,
     CDPError,
@@ -327,10 +327,10 @@ See [docs/limitations.md](docs/limitations.md) for details.
 Run the local verification set:
 
 ```sh
-python -m py_compile bare_cdp.py tests/test_bare_cdp.py tests/test_live_chrome.py examples/*.py
+python -m py_compile zero_cdp.py tests/test_zero_cdp.py tests/test_live_chrome.py examples/*.py
 python -m unittest discover -s tests -v
-python -m bare_cdp --help
-python -S -c "import sys; sys.path.insert(0, '.'); import bare_cdp; print(bare_cdp.__version__)"
+python -m zero_cdp --help
+python -S -c "import sys; sys.path.insert(0, '.'); import zero_cdp; print(zero_cdp.__version__)"
 ```
 
 The tests use only the Python standard library. They include a fake WebSocket/CDP server for handshake behavior, frame masking, CDP routing, events, selector safety, navigation waits, WebSocket control frames, screenshots, endpoint discovery, config validation, and process cleanup.

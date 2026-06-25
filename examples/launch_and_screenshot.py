@@ -1,4 +1,4 @@
-from bare_cdp import Browser, launch_chrome, terminate_chrome
+from zero_cdp import Browser, launch_chrome, terminate_chrome
 
 
 def main():

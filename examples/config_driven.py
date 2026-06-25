@@ -1,8 +1,8 @@
-from bare_cdp import Browser
+from zero_cdp import Browser
 
 
 def main():
-    browser = Browser.from_config("bare-cdp.example.json")
+    browser = Browser.from_config("zero-cdp.example.json")
     page = browser.page()
     try:
         page.navigate("https://example.com")

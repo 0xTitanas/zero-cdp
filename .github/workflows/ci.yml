@@ -27,19 +27,19 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Syntax check
-        run: python -m py_compile bare_cdp.py tests/test_bare_cdp.py
+        run: python -m py_compile zero_cdp.py tests/test_zero_cdp.py
 
       - name: Unit tests
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
       - name: CLI help
-        run: python -m bare_cdp --help
+        run: python -m zero_cdp --help
 
       - name: Single-file stdlib-only smoke
         run: |
-          python -S -c "import sys; sys.path.insert(0, '.'); import bare_cdp; print(bare_cdp.__version__)"
-          python -S bare_cdp.py --help
-          python -S bare_cdp.py --write-default-config "$RUNNER_TEMP/bare-cdp-smoke.json"
+          python -S -c "import sys; sys.path.insert(0, '.'); import zero_cdp; print(zero_cdp.__version__)"
+          python -S zero_cdp.py --help
+          python -S zero_cdp.py --write-default-config "$RUNNER_TEMP/zero-cdp-smoke.json"
 
       - name: Public safety scan
         run: |
@@ -75,4 +75,4 @@ jobs:
       - name: Install and console-script smoke
         run: |
           pip install .
-          bare-cdp --help
+          zero-cdp --help

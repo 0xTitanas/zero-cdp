@@ -1,5 +1,5 @@
 """
-Tests for bare_cdp.py — strict TDD, stdlib only.
+Tests for zero_cdp.py — strict TDD, stdlib only.
 
 Covers:
 - Import audit (only stdlib modules loaded by production script)
@@ -34,7 +34,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import bare_cdp as adapter
+import zero_cdp as adapter
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +344,7 @@ class TestImportAudit(unittest.TestCase):
     def test_no_third_party_imports(self):
         import ast
         import pathlib
-        src = pathlib.Path(__file__).resolve().parents[1] / "bare_cdp.py"
+        src = pathlib.Path(__file__).resolve().parents[1] / "zero_cdp.py"
         self.assertTrue(src.exists(), f"Production script not found: {src}")
         tree = ast.parse(src.read_text())
         for node in ast.walk(tree):
@@ -972,7 +972,7 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
              mock.patch("subprocess.Popen", side_effect=lambda cmd, **kwargs: launched.append(cmd) or proc), \
              mock.patch.object(adapter, "_wait_for_devtools_active_port", return_value=(9333, "ws://127.0.0.1:9333/devtools/browser/OWNED")), \
              mock.patch.object(adapter, "_verify_browser_endpoint"):
-            launch = adapter.launch_chrome(ready_timeout=1.0, user_data_dir="C:\\Temp\\BareCDP")
+            launch = adapter.launch_chrome(ready_timeout=1.0, user_data_dir="C:\\Temp\\ZeroCDP")
             adapter.terminate_chrome(launch)
 
         self.assertEqual(launched[0][0], expected)
@@ -996,7 +996,7 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
              mock.patch("subprocess.Popen", side_effect=lambda cmd, **kwargs: launched.append(cmd) or proc), \
              mock.patch.object(adapter, "_wait_for_devtools_active_port", return_value=(9333, "ws://127.0.0.1:9333/devtools/browser/OWNED")), \
              mock.patch.object(adapter, "_verify_browser_endpoint"):
-            launch = adapter.launch_chrome(ready_timeout=1.0, user_data_dir="C:\\Temp\\BareCDP")
+            launch = adapter.launch_chrome(ready_timeout=1.0, user_data_dir="C:\\Temp\\ZeroCDP")
             adapter.terminate_chrome(launch)
 
         self.assertEqual(launched[0][0], expected)
@@ -1024,7 +1024,7 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
              mock.patch("subprocess.Popen", side_effect=lambda cmd, **kwargs: launched.append(cmd) or proc), \
              mock.patch.object(adapter, "_wait_for_devtools_active_port", return_value=(9333, "ws://127.0.0.1:9333/devtools/browser/OWNED")), \
              mock.patch.object(adapter, "_verify_browser_endpoint"):
-            launch = adapter.launch_chrome(ready_timeout=1.0, user_data_dir="C:\\Temp\\BareCDP")
+            launch = adapter.launch_chrome(ready_timeout=1.0, user_data_dir="C:\\Temp\\ZeroCDP")
             adapter.terminate_chrome(launch)
 
         self.assertEqual(launched[0][0], expected)
@@ -1039,13 +1039,13 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
         proc = mock.Mock()
         proc.poll.return_value = None
         proc.wait.return_value = None
-        temp_dir = tempfile.mkdtemp(prefix="barecdp-owned-profile-")
+        temp_dir = tempfile.mkdtemp(prefix="zerocdp-owned-profile-")
         launch = adapter.LaunchedChrome(proc, 9333, "ws://127.0.0.1:9333/devtools/browser/OWNED", temp_dir, True, None)
         adapter.terminate_chrome(launch)
         self.assertFalse(os.path.exists(temp_dir))
         proc.terminate.assert_called_once()
 
-        user_dir = tempfile.mkdtemp(prefix="barecdp-user-profile-")
+        user_dir = tempfile.mkdtemp(prefix="zerocdp-user-profile-")
         try:
             proc2 = mock.Mock()
             proc2.poll.return_value = None
@@ -1058,10 +1058,10 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
 
     def test_load_config_environment_overrides(self):
         env = {
-            "BARE_CDP_HOST": "localhost",
-            "BARE_CDP_PORT": "9333",
-            "BARE_CDP_HEADLESS": "false",
-            "BARE_CDP_TIMEOUT": "2.5",
+            "ZERO_CDP_HOST": "localhost",
+            "ZERO_CDP_PORT": "9333",
+            "ZERO_CDP_HEADLESS": "false",
+            "ZERO_CDP_TIMEOUT": "2.5",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             cfg = adapter.load_config(None)
@@ -1173,7 +1173,7 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
             process=mock.Mock(),
             port=4567,
             browser_ws_url="ws://127.0.0.1:4567/devtools/browser/OWNED",
-            user_data_dir="/tmp/barecdp-owned",
+            user_data_dir="/tmp/zerocdp-owned",
             owns_user_data_dir=False,
             stderr_path=None,
         )
@@ -1195,7 +1195,7 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
             process=mock.Mock(),
             port=4567,
             browser_ws_url="ws://127.0.0.1:4567/devtools/browser/OWNED",
-            user_data_dir="/tmp/barecdp-owned",
+            user_data_dir="/tmp/zerocdp-owned",
             owns_user_data_dir=False,
             stderr_path=None,
         )
@@ -1234,7 +1234,7 @@ class TestLaunchAndConfigHardening(unittest.TestCase):
             process=mock.Mock(),
             port=5555,
             browser_ws_url="ws://127.0.0.1:5555/devtools/browser/OWNED",
-            user_data_dir="/tmp/barecdp-owned",
+            user_data_dir="/tmp/zerocdp-owned",
             owns_user_data_dir=False,
             stderr_path=None,
         )

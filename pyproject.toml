@@ -3,13 +3,13 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bare-cdp"
+name = "zero-cdp"
 version = "0.2.3"
-description = "Bare-metal Chrome DevTools Protocol automation for Python with zero runtime dependencies."
+description = "Zero-dependency Chrome DevTools Protocol automation for Python."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
-authors = [{name = "BareCDP contributors"}]
+authors = [{name = "ZeroCDP contributors"}]
 keywords = ["chrome", "chromium", "cdp", "devtools", "browser-automation", "stdlib", "zero-dependency"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -26,12 +26,12 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
-bare-cdp = "bare_cdp:main"
+zero-cdp = "zero_cdp:main"
 
 [project.urls]
-Homepage = "https://github.com/0xTitanas/bare-cdp"
-Repository = "https://github.com/0xTitanas/bare-cdp"
-Issues = "https://github.com/0xTitanas/bare-cdp/issues"
+Homepage = "https://github.com/0xTitanas/zero-cdp"
+Repository = "https://github.com/0xTitanas/zero-cdp"
+Issues = "https://github.com/0xTitanas/zero-cdp/issues"
 
 [tool.setuptools]
-py-modules = ["bare_cdp"]
+py-modules = ["zero_cdp"]

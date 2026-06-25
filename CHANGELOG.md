@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Completed project-wide ZeroCDP naming alignment: package metadata, module name,
+  console script, config filename, environment variables, documentation snippets,
+  examples, tests, CI, and diagrams now use `zero-cdp`, `zero_cdp`, and
+  `ZERO_CDP_*` consistently.
+
 ## [0.2.3] — 2026-06-19
 
 ### Added
@@ -22,7 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   included in this release.
 
 ### Unchanged
-- Runtime behavior in `bare_cdp.py` is unchanged from 0.2.2 except for the version string;
+- Runtime behavior in `zero_cdp.py` is unchanged from 0.2.2 except for the version string;
   this is a documentation, community-hygiene, and test-infrastructure release.
 
 ## [0.2.2] — 2026-06-19
@@ -137,7 +143,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `wait_until_ready()` and `ready_timeout` support in `launch_chrome()`.
 - `terminate_chrome()` helper for process shutdown and ZeroCDP-created temp profile cleanup.
 - Context manager support for `CDPConnection` and `Browser`.
-- `bare-cdp` console entry point (equivalent to `python -m bare_cdp`; installed by `pip install`).
+- `zero-cdp` console entry point (equivalent to `python -m zero_cdp`; installed by `pip install`).
 
 ### Changed
 - `CDPConnection.events` is now a bounded `collections.deque(maxlen=2000)` rather than an
@@ -171,7 +177,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Browser` (`ChromeCDPAdapter`): connect to running Chrome, config-driven launch,
   multi-target selection, new-tab helper.
 - `launch_chrome()`: auto-discovers Chrome/Chromium on macOS and Linux.
-- CLI (`python -m bare_cdp`) with navigation, text/HTML extraction, screenshot, JS eval,
+- CLI (`python -m zero_cdp`) with navigation, text/HTML extraction, screenshot, JS eval,
   and config file generation.
-- JSON config file (`bare-cdp.json`) with environment variable overrides.
+- JSON config file (`zero-cdp.json`) with environment variable overrides.
 - Unit tests with a fake stdlib WebSocket/CDP server (no Chrome required).

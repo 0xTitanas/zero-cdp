@@ -1,4 +1,4 @@
-from bare_cdp import Browser
+from zero_cdp import Browser
 
 
 def main():

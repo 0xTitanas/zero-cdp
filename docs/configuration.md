@@ -6,8 +6,8 @@ constructor arguments. All three can be combined; environment variables take hig
 ## Generating a starter config
 
 ```bash
-python -m bare_cdp --write-default-config bare-cdp.json
-bare-cdp --write-default-config bare-cdp.json   # same, using the console script
+python -m zero_cdp --write-default-config zero-cdp.json
+zero-cdp --write-default-config zero-cdp.json   # same, using the console script
 ```
 
 ## Config file schema
@@ -52,20 +52,20 @@ Environment variables override the JSON file when set and non-empty.
 
 | Variable | Config key |
 | --- | --- |
-| `BARE_CDP_HOST` | `chrome.host` |
-| `BARE_CDP_PORT` | `chrome.port` |
-| `BARE_CDP_WS_URL` | `chrome.ws_url` |
-| `BARE_CDP_CHROME` | `chrome.executable` |
-| `BARE_CDP_USER_DATA_DIR` | `chrome.user_data_dir` |
-| `BARE_CDP_HEADLESS` | `chrome.headless` (`true`/`false`/`1`/`0`) |
-| `BARE_CDP_TIMEOUT` | `timeouts.default` |
+| `ZERO_CDP_HOST` | `chrome.host` |
+| `ZERO_CDP_PORT` | `chrome.port` |
+| `ZERO_CDP_WS_URL` | `chrome.ws_url` |
+| `ZERO_CDP_CHROME` | `chrome.executable` |
+| `ZERO_CDP_USER_DATA_DIR` | `chrome.user_data_dir` |
+| `ZERO_CDP_HEADLESS` | `chrome.headless` (`true`/`false`/`1`/`0`) |
+| `ZERO_CDP_TIMEOUT` | `timeouts.default` |
 
 ## Using a config from Python
 
 ```python
-from bare_cdp import Browser
+from zero_cdp import Browser
 
-browser = Browser.from_config("bare-cdp.json")
+browser = Browser.from_config("zero-cdp.json")
 browser.navigate("https://example.com")
 print(browser.extract_text())
 browser.close()
@@ -78,5 +78,5 @@ ZeroCDP itself makes no requests beyond the local Chrome debugging endpoint. All
 - Python 3.9+ (standard library only — no pip install required for the module itself)
 - A Chrome or Chromium binary reachable on the local machine
 
-In air-gapped or locked-down environments, copy `bare_cdp.py` into the project and import
+In air-gapped or locked-down environments, copy `zero_cdp.py` into the project and import
 it directly — no package manager, no registry access.

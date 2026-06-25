@@ -29,17 +29,17 @@ jobs:
           google-chrome --version || chromium --version || chromium-browser --version
 
       - name: Syntax check
-        run: python -m py_compile bare_cdp.py tests/test_live_chrome.py
+        run: python -m py_compile zero_cdp.py tests/test_live_chrome.py
 
       - name: Live Chrome unittest smoke
         env:
-          BARE_CDP_LIVE_CHROME: "1"
+          ZERO_CDP_LIVE_CHROME: "1"
         run: python -W error::ResourceWarning -m unittest tests.test_live_chrome -v
 
       - name: Documented CLI launch smoke
         run: |
           set -euo pipefail
-          url='data:text/html,%3Ctitle%3EBareCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20BareCDP%3C%2Fmain%3E'
-          output="$(python -m bare_cdp --launch --new-tab about:blank --navigate "$url" --extract-text)"
+          url='data:text/html,%3Ctitle%3EZeroCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20ZeroCDP%3C%2Fmain%3E'
+          output="$(python -m zero_cdp --launch --new-tab about:blank --navigate "$url" --extract-text)"
           printf '%s\n' "$output"
-          printf '%s\n' "$output" | grep 'Hello from BareCDP'
+          printf '%s\n' "$output" | grep 'Hello from ZeroCDP'

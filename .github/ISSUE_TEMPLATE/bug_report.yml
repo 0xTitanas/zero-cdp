@@ -1,18 +1,18 @@
 name: Bug report
-description: Report incorrect or unexpected BareCDP behavior.
+description: Report incorrect or unexpected ZeroCDP behavior.
 title: "[bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to file a report. BareCDP is an alpha-quality,
+        Thanks for taking the time to file a report. ZeroCDP is an alpha-quality,
         stdlib-only, single-file Chrome DevTools Protocol client, so please keep
         examples small and self-contained.
 
         Before pasting any logs or page output, remove cookies, tokens, local
         storage, and authenticated page content — see
-        [docs/security.md](https://github.com/0xTitanas/bare-cdp/blob/main/docs/security.md).
+        [docs/security.md](https://github.com/0xTitanas/zero-cdp/blob/main/docs/security.md).
   - type: textarea
     id: summary
     attributes:
@@ -33,7 +33,7 @@ body:
     id: expected
     attributes:
       label: Expected behavior
-      description: What you expected BareCDP to do instead.
+      description: What you expected ZeroCDP to do instead.
     validations:
       required: false
   - type: textarea
@@ -45,10 +45,10 @@ body:
     validations:
       required: false
   - type: input
-    id: bare-cdp-version
+    id: zero-cdp-version
     attributes:
-      label: BareCDP version
-      description: Output of `python -c "import bare_cdp; print(bare_cdp.__version__)"` or the vendored module header.
+      label: ZeroCDP version
+      description: Output of `python -c "import zero_cdp; print(zero_cdp.__version__)"` or the vendored module header.
       placeholder: "0.2.3"
     validations:
       required: true
@@ -96,7 +96,7 @@ body:
       options:
         - label: I searched existing issues and this is not a duplicate.
           required: true
-        - label: I am using an unmodified `bare_cdp.py` (no third-party runtime patches).
+        - label: I am using an unmodified `zero_cdp.py` (no third-party runtime patches).
           required: true
         - label: I removed cookies, tokens, and authenticated page content from anything pasted above.
           required: true

@@ -23,7 +23,7 @@
     <line x1="258" y1="236" x2="331" y2="236" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrow)"/>
 
     <rect x="340" y="150" width="216" height="172" rx="18" fill="#102a43" stroke="#38bdf8" stroke-width="2"/>
-    <text x="448" y="187" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700">bare_cdp.py</text>
+    <text x="448" y="187" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700">zero_cdp.py</text>
     <text x="448" y="218" text-anchor="middle" fill="#dbeafe" font-size="14">Browser</text>
     <text x="448" y="241" text-anchor="middle" fill="#dbeafe" font-size="14">CDPConnection</text>
     <text x="448" y="264" text-anchor="middle" fill="#dbeafe" font-size="14">launch_chrome()</text>

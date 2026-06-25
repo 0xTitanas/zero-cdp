@@ -1,4 +1,4 @@
-from bare_cdp import Browser
+from zero_cdp import Browser
 
 
 def main():
@@ -11,10 +11,10 @@ def main():
         page.evaluate("""
         (function(){
           const el = document.querySelector('textarea[name=q]') || document.querySelector('input[name=q]');
-          if (el) el.setAttribute('data-bare-cdp-target', 'q');
+          if (el) el.setAttribute('data-zero-cdp-target', 'q');
         })()
         """)
-        page.input_text("[data-bare-cdp-target=q]", "Chrome DevTools Protocol", press_enter=True)
+        page.input_text("[data-zero-cdp-target=q]", "Chrome DevTools Protocol", press_enter=True)
         print(page.extract_text())
     finally:
         browser.close()

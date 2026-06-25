@@ -1,18 +1,18 @@
 """
-Live Chrome smoke tests for bare_cdp.py — stdlib only, opt-in.
+Live Chrome smoke tests for zero_cdp.py — stdlib only, opt-in.
 
 These tests drive a real Chrome/Chromium process over the Chrome DevTools
-Protocol. They are skipped unless ``BARE_CDP_LIVE_CHROME=1`` is set, so the
+Protocol. They are skipped unless ``ZERO_CDP_LIVE_CHROME=1`` is set, so the
 default unit run (``python -m unittest discover -s tests``) stays headless and
 browser-free.
 
 Run locally:
 
-    BARE_CDP_LIVE_CHROME=1 python -W error::ResourceWarning \
+    ZERO_CDP_LIVE_CHROME=1 python -W error::ResourceWarning \
         -m unittest tests.test_live_chrome -v
 
-Optionally point at a specific binary with ``BARE_CDP_CHROME=/path/to/chrome``;
-otherwise BareCDP auto-discovers Chrome/Chromium. Chrome is launched headless
+Optionally point at a specific binary with ``ZERO_CDP_CHROME=/path/to/chrome``;
+otherwise ZeroCDP auto-discovers Chrome/Chromium. Chrome is launched headless
 with a disposable profile via ``launch_chrome`` and torn down (process +
 temp profile) after the suite. Screenshots and temp artifacts use the system
 temporary directory.
@@ -30,11 +30,11 @@ import urllib.parse
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import bare_cdp
+import zero_cdp
 
 
-LIVE = os.environ.get("BARE_CDP_LIVE_CHROME") == "1"
-CHROME_EXE = os.environ.get("BARE_CDP_CHROME") or None
+LIVE = os.environ.get("ZERO_CDP_LIVE_CHROME") == "1"
+CHROME_EXE = os.environ.get("ZERO_CDP_CHROME") or None
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 JPEG_MAGIC = b"\xff\xd8\xff"
 
@@ -42,12 +42,12 @@ JPEG_MAGIC = b"\xff\xd8\xff"
 # data: URL so the tests are deterministic and offline-friendly.
 TEXT_HTML = (
     "<!doctype html><html><head><meta charset='utf-8'>"
-    "<title>BareCDP Live</title></head>"
-    "<body><main id='content'>Hello from the BareCDP live smoke test.</main></body></html>"
+    "<title>ZeroCDP Live</title></head>"
+    "<body><main id='content'>Hello from the ZeroCDP live smoke test.</main></body></html>"
 )
 INTERACTION_HTML = (
     "<!doctype html><html><head><meta charset='utf-8'>"
-    "<title>BareCDP Interactions</title></head><body>"
+    "<title>ZeroCDP Interactions</title></head><body>"
     "<input id='field' type='text'>"
     "<button id='btn'>Go</button>"
     "<div id='status'>idle</div>"
@@ -61,7 +61,7 @@ INTERACTION_HTML = (
 )
 DELAYED_HTML = (
     "<!doctype html><html><head><meta charset='utf-8'>"
-    "<title>BareCDP Delayed</title></head><body>"
+    "<title>ZeroCDP Delayed</title></head><body>"
     "<div id='immediate'>here</div>"
     "<script>setTimeout(function(){"
     "var d=document.createElement('div');d.id='delayed';d.textContent='ready';"
@@ -70,7 +70,7 @@ DELAYED_HTML = (
 )
 BOX_HTML = (
     "<!doctype html><html><head><meta charset='utf-8'>"
-    "<title>BareCDP Shot</title></head>"
+    "<title>ZeroCDP Shot</title></head>"
     "<body style='margin:0'>"
     "<div style='width:200px;height:120px;background:#3366cc'></div>"
     "</body></html>"
@@ -81,7 +81,7 @@ def _data_url(html):
     return "data:text/html;charset=utf-8," + urllib.parse.quote(html)
 
 
-@unittest.skipUnless(LIVE, "set BARE_CDP_LIVE_CHROME=1 to run live Chrome tests")
+@unittest.skipUnless(LIVE, "set ZERO_CDP_LIVE_CHROME=1 to run live Chrome tests")
 class LiveChromeTest(unittest.TestCase):
     """Exercise the real launch/connect/act/cleanup path against Chrome."""
 
@@ -90,14 +90,14 @@ class LiveChromeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            cls.launch = bare_cdp.launch_chrome(
+            cls.launch = zero_cdp.launch_chrome(
                 executable=CHROME_EXE,
                 headless=True,
                 ready_timeout=30.0,
             )
         except FileNotFoundError as exc:
             raise unittest.SkipTest(
-                "no Chrome/Chromium binary found; set BARE_CDP_CHROME to a "
+                "no Chrome/Chromium binary found; set ZERO_CDP_CHROME to a "
                 f"browser executable to run live tests ({exc})"
             )
         cls.port = cls.launch.port
@@ -105,13 +105,13 @@ class LiveChromeTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         if cls.launch is not None:
-            bare_cdp.terminate_chrome(cls.launch)
+            zero_cdp.terminate_chrome(cls.launch)
             cls.launch = None
 
     # -- helpers ----------------------------------------------------------
 
     def _browser(self):
-        browser = bare_cdp.Browser(port=self.port)
+        browser = zero_cdp.Browser(port=self.port)
         self.addCleanup(browser.close)
         return browser
 
@@ -135,7 +135,7 @@ class LiveChromeTest(unittest.TestCase):
         browser = self._browser()
         page = browser.connect()
         self.assertEqual(page.evaluate("1 + 2"), 3)
-        self.assertEqual(page.evaluate("'ba' + 're' + '-cdp'"), "bare-cdp")
+        self.assertEqual(page.evaluate("'ze' + 'ro' + '-cdp'"), "zero-cdp")
         user_agent = page.evaluate("navigator.userAgent")
         self.assertIsInstance(user_agent, str)
         self.assertIn("Chrome", user_agent)
@@ -143,17 +143,17 @@ class LiveChromeTest(unittest.TestCase):
     def test_navigate_and_extract_text(self):
         """Navigation to a data URL renders extractable text and title."""
         page = self._page(TEXT_HTML)
-        self.assertEqual(page.evaluate("document.title"), "BareCDP Live")
+        self.assertEqual(page.evaluate("document.title"), "ZeroCDP Live")
 
         whole = page.extract_text()
-        self.assertIn("Hello from the BareCDP live smoke test.", whole)
+        self.assertIn("Hello from the ZeroCDP live smoke test.", whole)
 
         scoped = page.extract_text("#content")
-        self.assertEqual(scoped.strip(), "Hello from the BareCDP live smoke test.")
+        self.assertEqual(scoped.strip(), "Hello from the ZeroCDP live smoke test.")
 
         html = page.extract_html("#content")
         self.assertIn("id=\"content\"", html)
-        self.assertIn("Hello from the BareCDP live smoke test.", html)
+        self.assertIn("Hello from the ZeroCDP live smoke test.", html)
 
     def test_wait_for_selector_success(self):
         """wait_for_selector resolves an element added after a delay."""
@@ -168,13 +168,13 @@ class LiveChromeTest(unittest.TestCase):
     def test_wait_for_selector_missing_times_out(self):
         """A selector that never appears raises CDPTimeoutError."""
         page = self._page(TEXT_HTML)
-        with self.assertRaises(bare_cdp.CDPTimeoutError):
+        with self.assertRaises(zero_cdp.CDPTimeoutError):
             page.wait_for_selector("#does-not-exist", timeout=0.75)
 
     def test_wait_for_selector_invalid_raises(self):
         """Invalid CSS syntax surfaces as SelectorError, not a timeout."""
         page = self._page(TEXT_HTML)
-        with self.assertRaises(bare_cdp.SelectorError):
+        with self.assertRaises(zero_cdp.SelectorError):
             page.wait_for_selector("::::", timeout=2.0)
 
     def test_input_text_punctuation_unicode_quotes(self):
@@ -194,7 +194,7 @@ class LiveChromeTest(unittest.TestCase):
     def test_input_text_missing_selector_raises(self):
         """Targeting a missing element raises SelectorError before inserting."""
         page = self._page(INTERACTION_HTML)
-        with self.assertRaises(bare_cdp.SelectorError):
+        with self.assertRaises(zero_cdp.SelectorError):
             page.input_text("#missing-field", "text")
 
     def test_click_updates_dom_state(self):
@@ -234,7 +234,7 @@ class LiveChromeTest(unittest.TestCase):
         self.assertGreater(len(data), 100)
         self.assertTrue(data.startswith(PNG_MAGIC))
 
-        tmpdir = tempfile.mkdtemp(prefix="bare_cdp_live_")
+        tmpdir = tempfile.mkdtemp(prefix="zero_cdp_live_")
         self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
         path = os.path.join(tmpdir, "shot.png")
         written = page.screenshot(path=path)
@@ -281,14 +281,14 @@ class LiveChromeTest(unittest.TestCase):
         cursor = page.event_cursor()
         self.assertIsInstance(cursor, int)
 
-        page.evaluate("console.log('bare-cdp-live-event')")
+        page.evaluate("console.log('zero-cdp-live-event')")
         params = page.wait_for_event(
             "Runtime.consoleAPICalled",
             timeout=5.0,
             after_sequence=cursor,
         )
         values = [arg.get("value") for arg in params.get("args", [])]
-        self.assertIn("bare-cdp-live-event", values)
+        self.assertIn("zero-cdp-live-event", values)
 
         recent = page.recent_events()
         self.assertIsInstance(recent, tuple)
@@ -298,13 +298,13 @@ class LiveChromeTest(unittest.TestCase):
 
     def test_terminate_chrome_cleans_process_and_profile(self):
         """A fresh launch is fully torn down: process exits, temp profile gone."""
-        launch = bare_cdp.launch_chrome(
+        launch = zero_cdp.launch_chrome(
             executable=CHROME_EXE,
             headless=True,
             ready_timeout=30.0,
         )
         # Safety net if an assertion below fails before explicit termination.
-        self.addCleanup(bare_cdp.terminate_chrome, launch)
+        self.addCleanup(zero_cdp.terminate_chrome, launch)
 
         profile = launch.user_data_dir
         self.assertTrue(launch.owns_user_data_dir)
@@ -312,13 +312,13 @@ class LiveChromeTest(unittest.TestCase):
         self.assertIsNone(launch.process.poll())  # still running
 
         # A throwaway connection proves the endpoint is live before teardown.
-        browser = bare_cdp.Browser(port=launch.port)
+        browser = zero_cdp.Browser(port=launch.port)
         try:
             self.assertEqual(browser.connect().evaluate("21 * 2"), 42)
         finally:
             browser.close()
 
-        bare_cdp.terminate_chrome(launch)
+        zero_cdp.terminate_chrome(launch)
         self.assertIsNotNone(launch.process.poll())  # exited
         self.assertFalse(os.path.exists(profile))    # temp profile removed
         if launch.stderr_path:

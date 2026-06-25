@@ -17,8 +17,8 @@
 
 ## Checklist
 
-- [ ] `bare_cdp.py` still imports only the Python standard library (no new runtime dependency).
-- [ ] The project remains single-file (`bare_cdp.py`).
+- [ ] `zero_cdp.py` still imports only the Python standard library (no new runtime dependency).
+- [ ] The project remains single-file (`zero_cdp.py`).
 - [ ] Tests are added or updated for behavior changes, and remain stdlib-only (no pytest/third-party fixtures).
 - [ ] `CHANGELOG.md` updated under `## [Unreleased]` (for user-visible changes).
 - [ ] Docs/README updated if the public surface or claims changed.
@@ -32,8 +32,8 @@
 <!-- Paste the commands you ran. The local smoke set is: -->
 
 ```sh
-python -m py_compile bare_cdp.py tests/test_bare_cdp.py examples/*.py
+python -m py_compile zero_cdp.py tests/test_zero_cdp.py examples/*.py
 python -W error::ResourceWarning -m unittest discover -s tests -v
-python -m bare_cdp --help
-python -S -c "import sys; sys.path.insert(0, '.'); import bare_cdp; print(bare_cdp.__version__)"
+python -m zero_cdp --help
+python -S -c "import sys; sys.path.insert(0, '.'); import zero_cdp; print(zero_cdp.__version__)"
 ```

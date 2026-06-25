@@ -2,28 +2,28 @@
 
 ## The stdlib-only invariant
 
-ZeroCDP's core design constraint: **`bare_cdp.py` imports only Python standard-library modules**.
+ZeroCDP's core design constraint: **`zero_cdp.py` imports only Python standard-library modules**.
 No third-party packages may be added to runtime imports, even as optional dependencies.
 Before opening a PR that adds an import, verify the module is available on a stock Python
 installation without `pip install`.
 
-The test suite enforces this: the import-audit test reads `bare_cdp.py` and asserts that every
+The test suite enforces this: the import-audit test reads `zero_cdp.py` and asserts that every
 top-level imported module resolves from stdlib.
 
 ## Running the tests
 
 ```bash
 # Syntax check
-python -m py_compile bare_cdp.py tests/test_bare_cdp.py
+python -m py_compile zero_cdp.py tests/test_zero_cdp.py
 
 # Unit tests (ResourceWarning treated as errors)
 python -W error::ResourceWarning -m unittest discover -s tests -v
 
 # CLI smoke
-python -m bare_cdp --help
+python -m zero_cdp --help
 
 # After pip install:
-bare-cdp --help
+zero-cdp --help
 ```
 
 No third-party packages are required to run the tests.
@@ -49,18 +49,18 @@ changes that touch launch, navigation, input, click, or screenshot behavior:
 ```bash
 # Start Chrome with a throwaway profile
 chrome --remote-debugging-port=9222 \
-       --user-data-dir=/tmp/bare-cdp-smoke \
+       --user-data-dir=/tmp/zero-cdp-smoke \
        --headless=new \
        --no-first-run
 
 # In another terminal
-python -m bare_cdp --navigate https://example.com --extract-text
-bare-cdp --navigate https://example.com --extract-text
+python -m zero_cdp --navigate https://example.com --extract-text
+zero-cdp --navigate https://example.com --extract-text
 ```
 
 ## Pull requests
 
-- Keep the module single-file (`bare_cdp.py`).
+- Keep the module single-file (`zero_cdp.py`).
 - Add or update unit tests for any new behavior. Tests must be stdlib-only (no pytest,
   no third-party fixtures).
 - Update `CHANGELOG.md` under `## [Unreleased]` with a brief description of the change.

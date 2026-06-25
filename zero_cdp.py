@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-BareCDP: bare-metal Chrome DevTools Protocol automation for Python.
+ZeroCDP: zero-dependency Chrome DevTools Protocol automation for Python.
 
-BareCDP is a stdlib-only browser control layer for scripts and orchestrators
+ZeroCDP is a stdlib-only browser control layer for scripts and orchestrators
 that need to drive Chrome/Chromium without Playwright, Selenium, WebDriver,
 or runtime dependencies. It talks directly to Chrome's DevTools Protocol over
 an intentionally minimal Chrome-oriented WebSocket implemented with the Python standard library.
 
 Quick start with a running Chrome debug port:
 
-    chrome --remote-debugging-port=9222 --user-data-dir=/tmp/bare-cdp-profile
+    chrome --remote-debugging-port=9222 --user-data-dir=/tmp/zero-cdp-profile
 
-    from bare_cdp import Browser
+    from zero_cdp import Browser
     browser = Browser(port=9222)
     browser.navigate("https://example.com")
     print(browser.extract_text())
@@ -19,7 +19,7 @@ Quick start with a running Chrome debug port:
 
 Launch Chrome from Python:
 
-    from bare_cdp import Browser, launch_chrome, terminate_chrome
+    from zero_cdp import Browser, launch_chrome, terminate_chrome
 
     launch = launch_chrome(headless=True)
     browser = Browser(port=launch.port)
@@ -31,18 +31,18 @@ Launch Chrome from Python:
 
 Use a JSON config file:
 
-    from bare_cdp import Browser
+    from zero_cdp import Browser
 
-    browser = Browser.from_config("bare-cdp.json")
+    browser = Browser.from_config("zero-cdp.json")
     browser.navigate("https://example.com")
     print(browser.extract_text())
     browser.close()
 
 CLI examples:
 
-    python -m bare_cdp --navigate https://example.com --extract-text
-    python -m bare_cdp --eval "document.title"
-    python -m bare_cdp --screenshot page.png
+    python -m zero_cdp --navigate https://example.com --extract-text
+    python -m zero_cdp --eval "document.title"
+    python -m zero_cdp --screenshot page.png
 """
 
 import argparse
@@ -69,9 +69,9 @@ import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
 __version__ = "0.2.3"
-__author__ = "BareCDP contributors"
+__author__ = "ZeroCDP contributors"
 __license__ = "MIT"
-__url__ = "https://github.com/0xTitanas/bare-cdp"
+__url__ = "https://github.com/0xTitanas/zero-cdp"
 
 
 _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -112,7 +112,7 @@ class LaunchedChrome:
 # ---------------------------------------------------------------------------
 
 class CDPError(Exception):
-    """Base exception for all BareCDP errors."""
+    """Base exception for all ZeroCDP errors."""
 
 
 class CDPConnectionError(CDPError, ConnectionError):
@@ -291,16 +291,16 @@ def _validate_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_config(path: Optional[str] = None) -> Dict[str, Any]:
-    """Load BareCDP JSON configuration and apply environment overrides.
+    """Load ZeroCDP JSON configuration and apply environment overrides.
 
     Environment variables:
-        BARE_CDP_HOST
-        BARE_CDP_PORT
-        BARE_CDP_WS_URL
-        BARE_CDP_CHROME
-        BARE_CDP_USER_DATA_DIR
-        BARE_CDP_HEADLESS
-        BARE_CDP_TIMEOUT
+        ZERO_CDP_HOST
+        ZERO_CDP_PORT
+        ZERO_CDP_WS_URL
+        ZERO_CDP_CHROME
+        ZERO_CDP_USER_DATA_DIR
+        ZERO_CDP_HEADLESS
+        ZERO_CDP_TIMEOUT
     """
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if path:
@@ -308,13 +308,13 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
             cfg = _deep_merge(cfg, json.load(f))
 
     env_map = {
-        "BARE_CDP_HOST": ("chrome", "host", str),
-        "BARE_CDP_PORT": ("chrome", "port", int),
-        "BARE_CDP_WS_URL": ("chrome", "ws_url", str),
-        "BARE_CDP_CHROME": ("chrome", "executable", str),
-        "BARE_CDP_USER_DATA_DIR": ("chrome", "user_data_dir", str),
-        "BARE_CDP_HEADLESS": ("chrome", "headless", _bool_from_env),
-        "BARE_CDP_TIMEOUT": ("timeouts", "default", float),
+        "ZERO_CDP_HOST": ("chrome", "host", str),
+        "ZERO_CDP_PORT": ("chrome", "port", int),
+        "ZERO_CDP_WS_URL": ("chrome", "ws_url", str),
+        "ZERO_CDP_CHROME": ("chrome", "executable", str),
+        "ZERO_CDP_USER_DATA_DIR": ("chrome", "user_data_dir", str),
+        "ZERO_CDP_HEADLESS": ("chrome", "headless", _bool_from_env),
+        "ZERO_CDP_TIMEOUT": ("timeouts", "default", float),
     }
     for env_name, (section, key, caster) in env_map.items():
         if env_name in os.environ and os.environ[env_name] != "":
@@ -322,7 +322,7 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
     return _validate_config(cfg)
 
 
-def write_default_config(path: str = "bare-cdp.json") -> str:
+def write_default_config(path: str = "zero-cdp.json") -> str:
     """Write a default JSON config file and return its path."""
     with open(path, "w", encoding="utf-8") as f:
         json.dump(DEFAULT_CONFIG, f, indent=2)
@@ -1564,7 +1564,7 @@ def _verify_browser_endpoint(port: int, browser_ws_url: str, timeout: float) -> 
 
 
 def terminate_chrome(proc: Any, timeout: float = 5.0) -> None:
-    """Terminate Chrome and remove BareCDP-owned temp profile/log artifacts."""
+    """Terminate Chrome and remove ZeroCDP-owned temp profile/log artifacts."""
     if proc is None:
         return
     if isinstance(proc, LaunchedChrome):
@@ -1573,8 +1573,8 @@ def terminate_chrome(proc: Any, timeout: float = 5.0) -> None:
         stderr_path = proc.stderr_path
     else:
         process = proc
-        temp_dir = getattr(proc, "_bare_cdp_temp_dir", None)
-        stderr_path = getattr(proc, "_bare_cdp_stderr_path", None)
+        temp_dir = getattr(proc, "_zero_cdp_temp_dir", None)
+        stderr_path = getattr(proc, "_zero_cdp_stderr_path", None)
     try:
         if process.poll() is None:
             process.terminate()
@@ -1734,7 +1734,7 @@ def launch_chrome(
                 previous_marker_text = None
 
         stderr_file = tempfile.NamedTemporaryFile(
-            prefix="bare_cdp_chrome_",
+            prefix="zero_cdp_chrome_",
             suffix=".log",
             delete=False,
         )
@@ -1760,8 +1760,8 @@ def launch_chrome(
 
         # Backward-compatible cleanup hints for callers that still pass the raw Popen
         if owns_profile:
-            proc._bare_cdp_temp_dir = user_data_dir  # type: ignore[attr-defined]
-        proc._bare_cdp_stderr_path = stderr_path  # type: ignore[attr-defined]
+            proc._zero_cdp_temp_dir = user_data_dir  # type: ignore[attr-defined]
+        proc._zero_cdp_stderr_path = stderr_path  # type: ignore[attr-defined]
 
         deadline = time.monotonic() + ready_timeout
         if port == 0:
@@ -1838,10 +1838,10 @@ def launch_chrome(
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="bare_cdp",
-        description="BareCDP — stdlib-only Chrome DevTools Protocol automation.",
+        prog="zero_cdp",
+        description="ZeroCDP — stdlib-only Chrome DevTools Protocol automation.",
     )
-    p.add_argument("--config", help="Path to a BareCDP JSON config file")
+    p.add_argument("--config", help="Path to a ZeroCDP JSON config file")
     p.add_argument("--write-default-config", metavar="FILE", help="Write a default config file and exit")
     p.add_argument("--host", help="Debugging host (default: config or 127.0.0.1)")
     p.add_argument("--port", type=int, help="Debugging port (default: 9222 in connect mode, ephemeral in launch mode)")

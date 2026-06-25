@@ -1,4 +1,4 @@
-<!-- Thanks for contributing to BareCDP. Keep changes small and auditable. -->
+<!-- Thanks for contributing to ZeroCDP. Keep changes small and auditable. -->
 
 ## Summary
 

@@ -1,8 +1,8 @@
-# Contributing to BareCDP
+# Contributing to ZeroCDP
 
 ## The stdlib-only invariant
 
-BareCDP's core design constraint: **`bare_cdp.py` imports only Python standard-library modules**.
+ZeroCDP's core design constraint: **`bare_cdp.py` imports only Python standard-library modules**.
 No third-party packages may be added to runtime imports, even as optional dependencies.
 Before opening a PR that adds an import, verify the module is available on a stock Python
 installation without `pip install`.
@@ -30,7 +30,7 @@ No third-party packages are required to run the tests.
 
 ## Security
 
-BareCDP controls a live browser process. A few hard constraints:
+ZeroCDP controls a live browser process. A few hard constraints:
 
 - **127.0.0.1 only**: the default host is always `127.0.0.1`. Do not add code or flags that
   bind the debugging port to a routable address without an explicit security review.

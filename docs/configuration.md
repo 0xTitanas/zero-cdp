@@ -1,6 +1,6 @@
 # Configuration
 
-BareCDP can be configured through a JSON file, environment variables, or direct Python
+ZeroCDP can be configured through a JSON file, environment variables, or direct Python
 constructor arguments. All three can be combined; environment variables take highest priority.
 
 ## Generating a starter config
@@ -73,7 +73,7 @@ browser.close()
 
 ## Offline and closed-system use
 
-BareCDP itself makes no requests beyond the local Chrome debugging endpoint. All it needs is:
+ZeroCDP itself makes no requests beyond the local Chrome debugging endpoint. All it needs is:
 
 - Python 3.9+ (standard library only — no pip install required for the module itself)
 - A Chrome or Chromium binary reachable on the local machine

@@ -1,4 +1,4 @@
-# BareCDP
+# ZeroCDP
 
 <p align="center">
   <strong>One Python file. No runtime dependencies. Drive Chrome over raw CDP.</strong><br>
@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/0xTitanas/bare-cdp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/0xTitanas/bare-cdp/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/0xTitanas/zero-cdp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/0xTitanas/zero-cdp/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python 3.9 to 3.13" src="https://img.shields.io/badge/python-3.9--3.13-blue">
   <img alt="Runtime dependencies: zero" src="https://img.shields.io/badge/runtime%20deps-zero-brightgreen">
   <img alt="Current release: v0.2.3" src="https://img.shields.io/badge/release-v0.2.3-informational">
@@ -14,24 +14,24 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/bare-cdp-header.png" alt="ZeroCDP header: a black mechanical serpent coiled around a translucent browser window, with overlay text reading ZeroCDP, Pure Python CDP · Zero runtime deps" width="100%">
+  <img src="docs/assets/zero-cdp-header.png" alt="ZeroCDP header: a black mechanical serpent coiled around a translucent browser window, with overlay text reading ZeroCDP, Pure Python CDP · Zero runtime deps" width="100%">
 </p>
 
 ---
 
-**BareCDP** is a compact Python browser-control layer for cases where installing a full automation framework is the wrong trade. It speaks directly to the **Chrome DevTools Protocol** through a minimal Chrome-oriented WebSocket path implemented with the Python standard library.
+**ZeroCDP** is a compact Python browser-control layer for cases where installing a full automation framework is the wrong trade. It speaks directly to the **Chrome DevTools Protocol** through a minimal Chrome-oriented WebSocket path implemented with the Python standard library.
 
 It is intentionally not Playwright, Selenium, or a browser farm. It is a vendorable actuator: connect to Chrome, run CDP commands, navigate, evaluate JavaScript, extract text/HTML, fill simple forms, press keys, and take screenshots from a synchronous script.
 
 <p align="center">
-  <img src="docs/assets/bare-cdp-flow.svg" alt="BareCDP control flow: caller to bare_cdp.py to local CDP endpoint to Chrome target">
+  <img src="docs/assets/zero-cdp-flow.svg" alt="ZeroCDP control flow: caller to bare_cdp.py to local CDP endpoint to Chrome target">
 </p>
 
 ## Why this exists
 
 Sometimes you don’t need a full browser automation framework. You need a small browser primitive that can be dropped into another system and audited in one sitting.
 
-BareCDP is built for:
+ZeroCDP is built for:
 
 - locked-down, offline, or dependency-constrained machines where Python and Chrome are available;
 - internal scripts and smoke checks that need browser control without a framework install;
@@ -57,7 +57,7 @@ BareCDP is built for:
 
 ## Quickstart
 
-### Option A: let BareCDP launch Chrome
+### Option A: let ZeroCDP launch Chrome
 
 ```python
 from bare_cdp import Browser, launch_chrome, terminate_chrome
@@ -65,7 +65,7 @@ from bare_cdp import Browser, launch_chrome, terminate_chrome
 launch = launch_chrome(headless=True)  # ephemeral CDP port + temp profile by default
 browser = Browser(port=launch.port)
 try:
-    url = "data:text/html,%3Ctitle%3EBareCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20BareCDP%3C%2Fmain%3E"
+    url = "data:text/html,%3Ctitle%3EZeroCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20ZeroCDP%3C%2Fmain%3E"
     browser.navigate(url)
     print(browser.evaluate("document.title"))
     print(browser.extract_text())
@@ -77,13 +77,13 @@ finally:
 Equivalent CLI smoke path:
 
 ```sh
-python -m bare_cdp --launch --new-tab about:blank --navigate "data:text/html,%3Ctitle%3EBareCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20BareCDP%3C%2Fmain%3E" --extract-text
+python -m bare_cdp --launch --new-tab about:blank --navigate "data:text/html,%3Ctitle%3EZeroCDP%3C%2Ftitle%3E%3Cmain%3EHello%20from%20ZeroCDP%3C%2Fmain%3E" --extract-text
 ```
 
 Expected text includes:
 
 ```text
-Hello from BareCDP
+Hello from ZeroCDP
 ```
 
 ### Option B: connect to an existing Chrome debug port
@@ -128,8 +128,8 @@ If you vendor the file, preserve the module header metadata so downstream users 
 ### Install from source
 
 ```sh
-git clone https://github.com/0xTitanas/bare-cdp.git
-cd bare-cdp
+git clone https://github.com/0xTitanas/zero-cdp.git
+cd zero-cdp
 python -m pip install .
 ```
 
@@ -137,8 +137,8 @@ After installation, the `bare-cdp` console script is available alongside `python
 
 Project links:
 
-- Source: https://github.com/0xTitanas/bare-cdp
-- Issues: https://github.com/0xTitanas/bare-cdp/issues
+- Source: https://github.com/0xTitanas/zero-cdp
+- Issues: https://github.com/0xTitanas/zero-cdp/issues
 - License: [MIT](LICENSE)
 
 ## Current capabilities
@@ -168,7 +168,7 @@ Text fallback for the diagram above:
 2. `Browser` manages endpoint discovery, optional Chrome launch, target selection, and owned connections.
 3. `CDPConnection` serializes WebSocket access and sends JSON-RPC CDP commands.
 4. Chrome executes the command against a page target.
-5. BareCDP returns structured command results, bounded event history, rendered text, HTML, screenshots, or raw CDP data.
+5. ZeroCDP returns structured command results, bounded event history, rendered text, HTML, screenshots, or raw CDP data.
 
 The core keeps concurrency simple: one command or event wait owns a connection at a time. For parallel browser work, open separate connections, use separate browser processes, or let the caller's orchestrator own fan-out.
 
@@ -203,7 +203,7 @@ Example config:
 
 `chrome.port: null` is mode-dependent: connect mode derives `9222`, while launch mode derives `0` so Chrome chooses an ephemeral debugging port. `ws_url` is connect-mode only; launch mode rejects it to avoid controlling a browser other than the one it just spawned.
 
-BareCDP validates config types strictly: `mode` must be `"connect"` or `"launch"`, `headless` must be a JSON boolean, `extra_args` must be a list of strings, ports must be integers, and timeouts must be finite positive numbers.
+ZeroCDP validates config types strictly: `mode` must be `"connect"` or `"launch"`, `headless` must be a JSON boolean, `extra_args` must be a list of strings, ports must be integers, and timeouts must be finite positive numbers.
 
 Environment overrides:
 
@@ -299,7 +299,7 @@ Recommended defaults:
 - Bind to `127.0.0.1`, not `0.0.0.0`.
 - Do not expose the debugging port through a reverse proxy or routable network address.
 - Use a dedicated automation profile.
-- Prefer BareCDP-owned temporary profiles for CI and untrusted pages.
+- Prefer ZeroCDP-owned temporary profiles for CI and untrusted pages.
 - Do not log cookies, tokens, local storage, or raw authenticated page dumps.
 - Do not automate password or 2FA entry through generic scripts.
 
@@ -307,7 +307,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting and [docs/security.md
 
 ## Limits and non-goals
 
-BareCDP deliberately does not provide:
+ZeroCDP deliberately does not provide:
 
 | Non-goal | Current position |
 | --- | --- |
@@ -365,7 +365,7 @@ Items that remain intentionally outside the current claim: a general WebSocket c
 
 If you need more abstraction or typed protocol wrappers, look at Playwright, Selenium, pychrome, PyChromeDevTools, PyCDP / chrome-devtools-protocol, or zerodep CDP.
 
-BareCDP is for the narrower niche where **small, auditable, stdlib-only, directly vendorable browser control** is the primary goal.
+ZeroCDP is for the narrower niche where **small, auditable, stdlib-only, directly vendorable browser control** is the primary goal.
 
 ## License
 

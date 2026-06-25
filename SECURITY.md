@@ -1,6 +1,6 @@
 # Security Policy
 
-Chrome remote debugging is powerful: anyone who can reach a debugging endpoint can effectively control that browser profile. BareCDP is a small client for controlled local automation; it is not a sandbox or a browser hardening layer.
+Chrome remote debugging is powerful: anyone who can reach a debugging endpoint can effectively control that browser profile. ZeroCDP is a small client for controlled local automation; it is not a sandbox or a browser hardening layer.
 
 ## Supported versions
 
@@ -23,9 +23,9 @@ Do not include cookies, tokens, personal browser data, screenshots of authentica
 
 ## Security posture
 
-BareCDP:
+ZeroCDP:
 
-- talks to a Chrome/Chromium DevTools Protocol endpoint chosen by the caller or launched by BareCDP;
+- talks to a Chrome/Chromium DevTools Protocol endpoint chosen by the caller or launched by ZeroCDP;
 - uses `127.0.0.1` defaults for local debugging;
 - creates disposable temporary Chrome profiles by default in `launch_chrome()` when no profile is supplied;
 - rejects launch-mode overrides for ownership-critical flags such as `--remote-debugging-port`, `--remote-debugging-address`, and `--user-data-dir`;

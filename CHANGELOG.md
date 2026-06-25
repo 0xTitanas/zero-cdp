@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to BareCDP are documented here.
+All notable changes to ZeroCDP are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
@@ -54,7 +54,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Config and CLI launch mode now default to an ephemeral Chrome-selected debugging port;
   connect mode still derives `9222` when no port is configured.
-- Launch mode rejects `ws_url` and ownership-critical `extra_args` that could point BareCDP
+- Launch mode rejects `ws_url` and ownership-critical `extra_args` that could point ZeroCDP
   at a browser other than the one it spawned.
 - `CDPConnection.events` now returns an immutable tuple snapshot; use `recent_events()` for
   copied bounded history.
@@ -125,7 +125,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   explicitly or use connect mode.
 
 ### Documented
-- Clarified that BareCDP is synchronous and sends one command at a time per connection; async
+- Clarified that ZeroCDP is synchronous and sends one command at a time per connection; async
   and orchestrator-level concurrency are outside the current API.
 
 ## [0.1.1] — 2026-06-19
@@ -135,7 +135,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CDPConnectionError`, `CDPProtocolError`, `CDPTimeoutError`, `CDPCommandError`, and
   `SelectorError`.
 - `wait_until_ready()` and `ready_timeout` support in `launch_chrome()`.
-- `terminate_chrome()` helper for process shutdown and BareCDP-created temp profile cleanup.
+- `terminate_chrome()` helper for process shutdown and ZeroCDP-created temp profile cleanup.
 - Context manager support for `CDPConnection` and `Browser`.
 - `bare-cdp` console entry point (equivalent to `python -m bare_cdp`; installed by `pip install`).
 
@@ -154,7 +154,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **WebSocket hardening**: inbound frames are size-capped; ping/pong, close frames,
   fragmentation, and socket timeouts are handled more defensively.
 - **Process cleanup**: Chrome launched via `launch_chrome()` can be terminated with
-  `terminate_chrome()`, which also removes BareCDP-created temporary profiles. `Browser.close()`
+  `terminate_chrome()`, which also removes ZeroCDP-created temporary profiles. `Browser.close()`
   performs the same cleanup when the browser was launched through `Browser.from_config()`.
 
 ### Documented
